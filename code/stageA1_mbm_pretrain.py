@@ -116,7 +116,7 @@ def main(config):
     
     device = torch.device(f'cuda:{config.local_rank}') if torch.cuda.is_available() else torch.device('cpu')
     torch.manual_seed(config.seed)
-    np.random.seed(config.seed)
+    np.random.seed(config.seed) # 为什么两次
 
     # create dataset and dataloader
     dataset_pretrain = hcp_dataset(path=os.path.join(config.root_path, 'data/HCP/npz'), roi=config.roi, patch_size=config.patch_size,
@@ -227,6 +227,9 @@ def plot_recon_figures(model, device, dataset, output_path, num_figures = 5, con
     plt.close(fig)
 
 def update_config(args, config):
+    '''
+    用命令行的参数更新脚本中的参数
+    '''
     for attr in config.__dict__:
         if hasattr(args, attr):
             if getattr(args, attr) != None:
@@ -235,8 +238,8 @@ def update_config(args, config):
 
 
 if __name__ == '__main__':
-    args = get_args_parser()
-    args = args.parse_args()
+    parser = get_args_parser()
+    args = parser.parse_args()
     config = Config_MBM_fMRI()
     config = update_config(args, config)
     main(config)

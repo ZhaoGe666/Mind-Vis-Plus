@@ -81,7 +81,7 @@ if __name__ == '__main__':
     target = args.dataset
     model_path = os.path.join(root, 'pretrains', f'{target}', 'finetuned.pth')
   
-    sd = torch.load(model_path, map_location='cpu')
+    sd = torch.load(model_path, map_location='cpu')  # 包括模型参数，超参数，状态(全256?)
     config = sd['config']
     # update paths
     config.root_path = root
