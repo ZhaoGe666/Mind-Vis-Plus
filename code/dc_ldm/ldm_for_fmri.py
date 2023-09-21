@@ -21,14 +21,16 @@ class cond_stage_model(nn.Module):
     def __init__(self, metafile, num_voxels, cond_dim=1280, global_pool=True):
         super().__init__()
         # prepare pretrained fmri mae 
-        model = create_model_from_config(metafile['config'], num_voxels, global_pool)
-        model.load_checkpoint(metafile['model'])
+        model = create_model_from_config(metafile['config'], num_voxels, global_pool)  # 初始化一个fmri_encoder对象
+        model.load_checkpoint(metafile['model'])  # fmri_encoder对象的参数通过metafile加载
+        # 问题是metafile哪来的，stageA也没用到fmri_encoder
+        # 破案了，stageA用到的 MAEforFMRI 的state可以用于fmri_encoder，encoder部分是一样的，变量名定义也一样所以可以load_state
         self.mae = model
-        self.fmri_seq_len = model.num_patches
-        self.fmri_latent_dim = model.embed_dim
-        if global_pool == False:
+        self.fmri_seq_len = model.num_patches  # 291  (291*169=4656)=num_voxels
+        self.fmri_latent_dim = model.embed_dim  # 1024
+        if global_pool == False: # False,   load_checkpoint中，为True时，不载入LayerNorm的参数
             self.channel_mapper = nn.Sequential(
-                nn.Conv1d(self.fmri_seq_len, self.fmri_seq_len // 2, 1, bias=True),
+                nn.Conv1d(self.fmri_seq_len, self.fmri_seq_len // 2, 1, bias=True), # kernel_size=1, 相当于1*1卷积
                 nn.Conv1d(self.fmri_seq_len // 2, 77, 1, bias=True)
             )
         self.dim_mapper = nn.Linear(self.fmri_latent_dim, cond_dim, bias=True)
@@ -38,7 +40,7 @@ class cond_stage_model(nn.Module):
         # n, c, w = x.shape
         latent_crossattn = self.mae(x)
         if self.global_pool == False:
-            latent_crossattn = self.channel_mapper(latent_crossattn)
+            latent_crossattn = self.channel_mapper(latent_crossattn) # 将seq_len作为channel去reduce？意义不明
         latent_crossattn = self.dim_mapper(latent_crossattn)
         out = latent_crossattn
         return out
@@ -51,12 +53,12 @@ class fLDM:
         self.ckp_path = os.path.join(pretrain_root, 'model.ckpt')
         self.config_path = os.path.join(pretrain_root, 'config.yaml') 
         config = OmegaConf.load(self.config_path)
-        config.model.params.unet_config.params.use_time_cond = use_time_cond
+        config.model.params.unet_config.params.use_time_cond = use_time_cond  # time step conditioning
         config.model.params.unet_config.params.global_pool = global_pool
 
         self.cond_dim = config.model.params.unet_config.params.context_dim
 
-        model = instantiate_from_config(config.model)
+        model = instantiate_from_config(config.model)  # 一个 LatentDiffusion 对象
         pl_sd = torch.load(self.ckp_path, map_location="cpu")['state_dict']
        
         m, u = model.load_state_dict(pl_sd, strict=False)
@@ -83,7 +85,7 @@ class fLDM:
                 output_path, config=None):
         config.trainer = None
         config.logger = None
-        self.model.main_config = config
+        self.model.main_config = config  # finetune时，logger需要替换？
         self.model.output_path = output_path
         # self.model.train_dataset = dataset
         self.model.run_full_validation_threshold = 0.15

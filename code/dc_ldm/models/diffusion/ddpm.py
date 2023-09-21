@@ -67,7 +67,7 @@ class DDPM(pl.LightningModule):
                  original_elbo_weight=0.,
                  v_posterior=0.,  # weight for choosing posterior variance as sigma = (1-v) * beta_tilde + v * beta
                  l_simple_weight=1.,
-                 conditioning_key=None,
+                 conditioning_key=None,  # 'crossattn'
                  parameterization="eps",  # all assuming fixed variance schedules
                  scheduler_config=None,
                  use_positional_encodings=False,
@@ -355,9 +355,9 @@ class DDPM(pl.LightningModule):
         loss, loss_dict = self(x)
         return loss, loss_dict
 
-    def training_step(self, batch, batch_idx):
-        self.train()
-        self.cond_stage_model.train()
+    def training_step(self, batch, batch_idx):  # 仅在DDPM中定义，LatentDiffusion中没有
+        self.train()  # 整个LatentDiffusion模型（作为子类），包括cond_stage_model
+        self.cond_stage_model.train()  # FIXME：重复了？
             
         loss, loss_dict = self.shared_step(batch)
 
@@ -564,18 +564,20 @@ class DDPM(pl.LightningModule):
 
 
 class LatentDiffusion(DDPM):
-    """main class"""
+    """main class
+    instantalized from './pretrains/ldm/label2img/config.yaml'
+    """
     def __init__(self,
-                first_stage_config,
-                cond_stage_config,
-                num_timesteps_cond=None,
-                cond_stage_key="image",
-                cond_stage_trainable=False,
-                concat_mode=True,
-                cond_stage_forward=None,
-                conditioning_key=None,
-                scale_factor=1.0,
-                scale_by_std=False,
+                first_stage_config,  # VQModelInterface 的参数
+                cond_stage_config,  # ClassEmbedder 的参数
+                num_timesteps_cond=None,  # 1
+                cond_stage_key="image",  # 'fmri'
+                cond_stage_trainable=False,  # True
+                concat_mode=True,  # True
+                cond_stage_forward=None,  # None
+                conditioning_key=None,  # 'corssattn'
+                scale_factor=1.0,  # 1.0
+                scale_by_std=False,  # False
                 *args, **kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         self.scale_by_std = scale_by_std
@@ -587,7 +589,7 @@ class LatentDiffusion(DDPM):
             conditioning_key = None
         ckpt_path = kwargs.pop("ckpt_path", None)
         ignore_keys = kwargs.pop("ignore_keys", [])
-        super().__init__(conditioning_key=conditioning_key, *args, **kwargs)
+        super().__init__(conditioning_key=conditioning_key, *args, **kwargs)  # 回到DDPM
         self.concat_mode = concat_mode
         self.cond_stage_trainable = cond_stage_trainable
         self.cond_stage_key = cond_stage_key
@@ -1465,7 +1467,7 @@ class DiffusionWrapper(pl.LightningModule):
     def __init__(self, diff_model_config, conditioning_key):
         super().__init__()
         self.diffusion_model = instantiate_from_config(diff_model_config)
-        self.conditioning_key = conditioning_key
+        self.conditioning_key = conditioning_key  # 'crossattn'
         assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm']
 
     def forward(self, x, t, c_concat: list = None, c_crossattn: list = None):

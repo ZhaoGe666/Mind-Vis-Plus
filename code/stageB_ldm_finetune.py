@@ -215,10 +215,11 @@ def create_readme(config, path):
 
 def create_trainer(num_epoch, precision=32, accumulate_grad_batches=2,logger=None,check_val_every_n_epoch=0):
     acc = 'gpu' if torch.cuda.is_available() else 'cpu'
+    devices = [0,5,6,7]  # FIXME:???
     return pl.Trainer(accelerator=acc, max_epochs=num_epoch, logger=logger, 
             precision=precision, accumulate_grad_batches=accumulate_grad_batches,
             enable_checkpointing=False, enable_model_summary=False, gradient_clip_val=0.5,
-            check_val_every_n_epoch=check_val_every_n_epoch)
+            check_val_every_n_epoch=check_val_every_n_epoch,devices=devices)
   
 if __name__ == '__main__':
     args = get_args_parser()
@@ -230,7 +231,7 @@ if __name__ == '__main__':
         model_meta = torch.load(config.checkpoint_path, map_location='cpu')
         ckp = config.checkpoint_path
         config = model_meta['config']
-        config.checkpoint_path = ckp
+        config.checkpoint_path = ckp  # 更新config中ckp为读取的ckp
         print('Resuming from checkpoint: {}'.format(config.checkpoint_path))
 
     output_path = os.path.join(config.root_path, 'results', 'generation',  '%s'%(datetime.datetime.now().strftime("%d-%m-%Y-%H-%M-%S")))
@@ -240,6 +241,9 @@ if __name__ == '__main__':
     wandb_init(config, output_path)
 
     logger = WandbLogger()
-    config.logger = logger
+    # config.logger = logger
+    config.logger = None # FIXME:???
+
+
     main(config)
     wandb_finish()
