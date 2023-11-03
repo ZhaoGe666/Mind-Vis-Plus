@@ -56,22 +56,22 @@ class fid_wrapper:
         return self.fid.compute().item() 
 
 def pair_wise_score(pred_imgs, gt_imgs, metric, is_sucess):
-    # pred_imgs: n, w, h, 3
-    # gt_imgs: n, w, h, 3
+    # pred_imgs: b, h, w, 3
+    # gt_imgs: b, h, w, 3
     # all in pixel values: 0 ~ 255
     # return: list of scores 0 ~ 1.
     assert len(pred_imgs) == len(gt_imgs)
     assert np.min(pred_imgs) >= 0 and np.min(gt_imgs) >= 0
-    assert isinstance(metric, fid_wrapper) == False, 'FID not supported'
+    assert isinstance(metric, fid_wrapper) == False, 'FID not supported'  # TODO
     corrects = []
-    for idx, pred in enumerate(pred_imgs):
+    for idx, pred in enumerate(pred_imgs): # b个
         gt = gt_imgs[idx]
-        gt_score = metric(pred, gt)
-        rest = [img for i, img in enumerate(gt_imgs) if i != idx]
+        gt_score = metric(pred, gt) # a sclar
+        rest = [img for i, img in enumerate(gt_imgs) if i != idx]  # 除本gt_img之外的gt_imgs
         count = 0
-        for comp in rest:
+        for comp in rest: # (b-1)个
             comp_score = metric(pred, comp)
-            if is_sucess(gt_score, comp_score):
+            if is_sucess(gt_score, comp_score):  # pred和本batch中其余
                 count += 1
         corrects.append(count / len(rest))
     return corrects
@@ -111,13 +111,15 @@ def metrics_only(pred_imgs, gt_imgs, metric, *args, **kwargs):
 
 @torch.no_grad()
 def n_way_top_k_acc(pred, class_id, n_way, num_trials=40, top_k=1):
-    pick_range =[i for i in np.arange(len(pred)) if i != class_id]
+    pick_range =[i for i in np.arange(len(pred)) if i != class_id]  # 0~999的list排除gt_idx(class_id)
     acc_list = []
     for t in range(num_trials):
-        idxs_picked = np.random.choice(pick_range, n_way-1, replace=False)
-        pred_picked = torch.cat([pred[class_id].unsqueeze(0), pred[idxs_picked]])
+        idxs_picked = np.random.choice(pick_range, n_way-1, replace=False) # 不放回采样50-1个class_idx
+        pred_picked = torch.cat([pred[class_id].unsqueeze(0), pred[idxs_picked]]) 
+        # (50) 第一个元素是gt_out的概率, 剩余49个元素是随机选中的类别中模型预测的概率
         acc = accuracy(pred_picked.unsqueeze(0), torch.tensor([0], device=pred.device), 
                     top_k=top_k)
+        # 只要第0个元素在这50个元素里最大，则acc为1，否则为0
         acc_list.append(acc.item())
     return np.mean(acc_list), np.std(acc_list)
 
@@ -131,13 +133,14 @@ def get_n_way_top_k_acc(pred_imgs, ground_truth, n_way, num_trials, top_k, devic
     
     acc_list = []
     std_list = []
-    for pred, gt in zip(pred_imgs, ground_truth):
+    for pred, gt in zip(pred_imgs, ground_truth): # b次
         pred = preprocess(Image.fromarray(pred.astype(np.uint8))).unsqueeze(0).to(device)
         gt = preprocess(Image.fromarray(gt.astype(np.uint8))).unsqueeze(0).to(device)
-        gt_class_id = model(gt).squeeze(0).softmax(0).argmax().item()
-        pred_out = model(pred).squeeze(0).softmax(0).detach()
+        gt_class_id = model(gt).squeeze(0).softmax(0).argmax().item()  # a scalar of index among 1000 classes in ImageNet
+        pred_out = model(pred).squeeze(0).softmax(0).detach()  # (1000,)
 
-        acc, std = n_way_top_k_acc(pred_out, gt_class_id, n_way, num_trials, top_k)
+        acc, std = n_way_top_k_acc(pred_out, gt_class_id, n_way, num_trials, top_k) # 50次抽样结果
+        # 每次抽样49个类别加上gt类别，预训练训练ViT认为生成图像最像gt类别的话，即可认为正确
         acc_list.append(acc)
         std_list.append(std)
        
@@ -146,14 +149,14 @@ def get_n_way_top_k_acc(pred_imgs, ground_truth, n_way, num_trials, top_k, devic
     return acc_list
 
 def get_similarity_metric(img1, img2, method='pair-wise', metric_name='mse', **kwargs):
-    # img1: n, w, h, 3
-    # img2: n, w, h, 3
+    # img1: b, w, h, 3
+    # img2: b, w, h, 3
     # all in pixel values: 0 ~ 255
     # return: list of scores 0 ~ 1.
     if img1.shape[-1] != 3:
-        img1 = rearrange(img1, 'n c w h -> n w h c')
+        img1 = rearrange(img1, 'b c h w -> b h w c')
     if img2.shape[-1] != 3:
-        img2 = rearrange(img2, 'n c w h -> n w h c')
+        img2 = rearrange(img2, 'b c h w -> b h w c')
 
     if method == 'pair-wise':
         eval_procedure_func = pair_wise_score 

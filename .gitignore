@@ -2,7 +2,7 @@ wandb/
 results/
 data/
 __pycache__/
-wandb/
+pretrains/
 lightning_logs/
 image_generation/
 mind_vis.egg-info/
@@ -15,3 +15,4 @@ mind_vis.egg-info/
 *.nii
 *.gz
 *.pth
+*.ipynb

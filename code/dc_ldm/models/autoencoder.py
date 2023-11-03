@@ -151,8 +151,8 @@ class VQModel(pl.LightningModule):
                  use_ema=False
                  ):
         super().__init__()
-        self.embed_dim = embed_dim
-        self.n_embed = n_embed
+        self.embed_dim = embed_dim  # 3
+        self.n_embed = n_embed  # 8192
         self.image_key = image_key
         self.encoder = Encoder(**ddconfig)
         self.decoder = Decoder(**ddconfig)
@@ -385,7 +385,7 @@ class VQModel(pl.LightningModule):
 class VQModelInterface(VQModel):
     def __init__(self, embed_dim, *args, **kwargs):
         super().__init__(embed_dim=embed_dim, *args, **kwargs)
-        self.embed_dim = embed_dim
+        self.embed_dim = embed_dim  # 3
 
     def encode(self, x):
         h = self.encoder(x)

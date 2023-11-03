@@ -87,7 +87,7 @@ class DDPM(pl.LightningModule):
         self.channels = channels
         self.use_positional_encodings = use_positional_encodings
         self.model = DiffusionWrapper(unet_config, conditioning_key)
-        count_params(self.model, verbose=True)
+        # count_params(self.model, verbose=True)
         self.use_ema = use_ema
         if self.use_ema:
             self.model_ema = LitEma(self.model)
@@ -120,7 +120,7 @@ class DDPM(pl.LightningModule):
         self.ddim_steps = ddim_steps
         self.return_cond = False
         self.output_path = None
-        self.main_config = None
+        # self.main_config = None
         self.best_val = 0.0 
         self.run_full_validation_threshold = 0.0
         self.eval_avg = True
@@ -138,8 +138,8 @@ class DDPM(pl.LightningModule):
             betas = make_beta_schedule(beta_schedule, timesteps, linear_start=linear_start, linear_end=linear_end,
                                        cosine_s=cosine_s)
         alphas = 1. - betas
-        alphas_cumprod = np.cumprod(alphas, axis=0)
-        alphas_cumprod_prev = np.append(1., alphas_cumprod[:-1])
+        alphas_cumprod = np.cumprod(alphas, axis=0)  # 0.99999~一个很小的数
+        alphas_cumprod_prev = np.append(1., alphas_cumprod[:-1])  # 左闭右开，所以丢掉最后一个，第一个补1
 
         timesteps, = betas.shape
         self.num_timesteps = int(timesteps)
@@ -288,7 +288,9 @@ class DDPM(pl.LightningModule):
                                   return_intermediates=return_intermediates)
 
     def q_sample(self, x_start, t, noise=None):
+        #  x_start:(B,3,64,64)  t:(B)
         noise = default(noise, lambda: torch.randn_like(x_start))
+        # sqrt_alphas_cumprod (1,0) 递减; sqrt_one_minus_alphas_cumprod (0,1)递增
         return (extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
                 extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise)
 
@@ -356,6 +358,11 @@ class DDPM(pl.LightningModule):
         return loss, loss_dict
 
     def training_step(self, batch, batch_idx):  # 仅在DDPM中定义，LatentDiffusion中没有
+        # print('\U0001F601','self.device', self.device)
+        # print('\U0001F601','batch[\'fmri\'].shape:', batch['fmri'].shape)
+        # print('\U0001F601','self.trainer.current_epoch:', self.trainer.current_epoch)
+        # print('\U0001F601','self.validation_count',self.validation_count)
+        # print('\U0001F601','batch_idx', batch_idx)
         self.train()  # 整个LatentDiffusion模型（作为子类），包括cond_stage_model
         self.cond_stage_model.train()  # FIXME：重复了？
             
@@ -372,7 +379,10 @@ class DDPM(pl.LightningModule):
 
     
     @torch.no_grad()
-    def generate(self, data, num_samples, ddim_steps=300, HW=None, limit=None, state=None):
+    def generate(self, batch, num_samples, ddim_steps=300, HW=None, limit=None, state=None):
+        print('\U0001F628'*10,'Generating in self.device:', self.device,'\U0001F628'*10)
+        print('\U0001F628'*10,'only rank0 do this? self.global_rank:', self.global_rank,'\U0001F628'*10)
+        # validation_step 和 full_validation 两次调用
         # fmri_embedding: n, seq_len, embed_dim
         all_samples = []
         if HW is None:
@@ -398,35 +408,39 @@ class DDPM(pl.LightningModule):
 
         # state = torch.cuda.get_rng_state()    
         with model.ema_scope():
-            for count, item in enumerate(zip(data['fmri'], data['image'])):
+            for count, item in enumerate(zip(batch['fmri'], batch['image'])):
                 if limit is not None:
                     if count >= limit:
                         break
-                latent = item[0] # fmri embedding
+                latent = item[0] # fmri embedding (1,4656)
                 gt_image = rearrange(item[1], 'h w c -> 1 c h w') # h w c
                 print(f"rendering {num_samples} examples in {ddim_steps} steps.")
                 c = model.get_learned_conditioning(repeat(latent, 'h w -> c h w', c=num_samples).to(self.device))
+                # c:(num_samples,291,1024)
                 samples_ddim, _ = sampler.sample(S=ddim_steps, 
                                                 conditioning=c,
                                                 batch_size=num_samples,
                                                 shape=shape,
                                                 verbose=False,
                                                 generator=None)
-
-                x_samples_ddim = model.decode_first_stage(samples_ddim)
+                # could be (num_samples,3,64,64)
+                x_samples_ddim = model.decode_first_stage(samples_ddim)  # could be (num_samples,3,256,256)
                 x_samples_ddim = torch.clamp((x_samples_ddim+1.0)/2.0,min=0.0, max=1.0)
-                gt_image = torch.clamp((gt_image+1.0)/2.0,min=0.0, max=1.0)
+                gt_image = torch.clamp((gt_image+1.0)/2.0,min=0.0, max=1.0)  # (3,256,256)
                 
                 all_samples.append(torch.cat([gt_image.detach().cpu(), x_samples_ddim.detach().cpu()], dim=0)) # put groundtruth at first
+                # (B<limit,num_samples+1,3,256,256)
         
         # display as grid
         grid = torch.stack(all_samples, 0)
-        grid = rearrange(grid, 'n b c h w -> (n b) c h w')
-        grid = make_grid(grid, nrow=num_samples+1)
+        grid = rearrange(grid, 'b n c h w -> (b n) c h w')
+        grid = make_grid(grid, nrow=num_samples+1)  # The final grid size is ``(B/nrow, nrow)``
 
         # to image
         grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
-        return grid, (255. * torch.stack(all_samples, 0).cpu().numpy()).astype(np.uint8), state
+        all_samples = (255. * torch.stack(all_samples, 0).cpu().numpy()).astype(np.uint8)
+        # (B<limit,num_samples+1,3,256,256)
+        return grid, all_samples, state
 
     def save_images(self, all_samples, suffix=0):
         if self.output_path is not None:
@@ -437,13 +451,18 @@ class DDPM(pl.LightningModule):
                     Image.fromarray(img).save(os.path.join(self.output_path, 'val', 
                                     f'{self.validation_count}_{suffix}', f'test{sp_idx}-{copy_idx}.png'))
                                     
-    def full_validation(self, batch, state=None):
+    def full_validation(self, batch, random_state=None):
+        print('\U0001F92C','self.device', self.device)
+        print('\U0001F92C','batch[\'fmri\'].shape:', batch['fmri'].shape)
+        print('\U0001F92C','self.trainer.current_epoch:', self.trainer.current_epoch)
+        print('\U0001F92C','self.validation_count',self.validation_count)
+        # 仅仅是对当前GPU的
         print('###### run full validation! ######\n')
-        grid, all_samples, state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=5, limit=None, state=state)
+        grid, all_samples, random_state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=5, limit=None, state=random_state)
         metric, metric_list = self.get_eval_metric(all_samples)
         self.save_images(all_samples, suffix='%.4f'%metric[-1])
         metric_dict = {f'val/{k}_full':v for k, v in zip(metric_list, metric)}
-        self.logger.log_metrics(metric_dict)
+        self.logger.log_metrics(metric_dict)  # FIXME: 记录steps的罪魁祸首！
         grid_imgs = Image.fromarray(grid.astype(np.uint8))
         self.logger.log_image(key=f'samples_test_full', images=[grid_imgs])
         if metric[-1] > self.best_val:
@@ -451,8 +470,8 @@ class DDPM(pl.LightningModule):
             torch.save(
                 {
                     'model_state_dict': self.state_dict(),
-                    'config': self.main_config,
-                    'state': state
+                    # 'config': self.main_config,
+                    'state': random_state
 
                 },
                 os.path.join(self.output_path, 'checkpoint_best.pth')
@@ -460,48 +479,69 @@ class DDPM(pl.LightningModule):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
-        if batch_idx != 0:
+        print('\U0001F628','self.device', self.device)
+        print('\U0001F628','batch_idx', batch_idx,' -- (should always be 0)')
+        print('\U0001F628','batch[\'fmri\'].shape:', batch['fmri'].shape)
+        print('\U0001F628','self.trainer.current_epoch:', self.trainer.current_epoch)
+        print('\U0001F628','self.validation_count',self.validation_count)
+        
+        if batch_idx != 0:  # 只有1个batch只可能为0
             return
         
         if self.validation_count % 15 == 0 and self.trainer.current_epoch != 0:
             self.full_validation(batch)
         else:
             grid, all_samples, state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=3, limit=5)
+            # all_samples: (B<limit,num_samples+1,3,256,256) 只算了5个以内的样本，每个样本采样3次生成图像
             metric, metric_list = self.get_eval_metric(all_samples, avg=self.eval_avg)
             grid_imgs = Image.fromarray(grid.astype(np.uint8))
             self.logger.log_image(key=f'samples_test', images=[grid_imgs])
             metric_dict = {f'val/{k}':v for k, v in zip(metric_list, metric)}
             self.logger.log_metrics(metric_dict)
+            ##############################
+            self.log('wtf/global_rankkkkkkkk', self.global_rank*1.)  # 2GPU的情况下，如果结果始终为0，则只GPU0的值，为0.5则跨gpu平均
+            if self.global_rank ==0:
+                self.log('wtf/xxx',233.)
+            elif self.global_rank == 1:
+                self.log('wtf/xxx',888.)
+            elif self.global_rank == 2:
+                self.log('wtf/xxx',0.6666)
+            ##############################
             if metric[-1] > self.run_full_validation_threshold:
-                self.full_validation(batch, state=state)
+                self.full_validation(batch, state)  # 'top-1-class (max)' 的acc>0.15时，对全部test样本生成
         self.validation_count += 1
 
     def get_eval_metric(self, samples, avg=True):
+        #  samples:(B,num_samples+1,3,256,256) 
         metric_list = ['mse', 'pcc', 'ssim', 'psm']
         res_list = []
         
-        gt_images = [img[0] for img in samples]
-        gt_images = rearrange(np.stack(gt_images), 'n c h w -> n h w c')
+        gt_images = [img[0] for img in samples]  # gt_image是第0个(dim=1)
+        gt_images = rearrange(np.stack(gt_images), 'b c h w -> b h w c')
         samples_to_run = np.arange(1, len(samples[0])) if avg else [1]
         for m in metric_list:
             res_part = []
-            for s in samples_to_run:
-                pred_images = [img[s] for img in samples]
-                pred_images = rearrange(np.stack(pred_images), 'n c h w -> n h w c')
+            for s in samples_to_run: # gt_image在前，所以在''对采样图的循环''中排除第0张
+                pred_images = [img[s] for img in samples]  # 每个样本都取第s个采样图，同state 
+                pred_images = rearrange(np.stack(pred_images), 'b c h w -> b h w c')
                 res = get_similarity_metric(pred_images, gt_images, method='pair-wise', metric_name=m)
-                res_part.append(np.mean(res))
-            res_list.append(np.mean(res_part))     
+                # 根据m算出metric_list中的一种指标，维度为 (B,)
+                # FIXME：成对相似性对比指标在batch中不完全？
+                # TODO: 添加FID
+                res_part.append(np.mean(res))  # 在batch上取平均后计入len(samples_to_run)的列表
+            res_list.append(np.mean(res_part))  # 对n(num_samples)次采样取平均后计入所有指标list
+        # res_list:['mse', 'pcc', 'ssim', 'psm'] 每个元素都是标量
         res_part = []
         for s in samples_to_run:
             pred_images = [img[s] for img in samples]
-            pred_images = rearrange(np.stack(pred_images), 'n c h w -> n h w c')
-            res = get_similarity_metric(pred_images, gt_images, 'class', None, 
-                            n_way=50, num_trials=50, top_k=1, device='cuda')
-            res_part.append(np.mean(res))
+            pred_images = rearrange(np.stack(pred_images), 'b c h w -> b h w c')
+            res = get_similarity_metric(pred_images, gt_images, method='class', metric_name=None, 
+                            n_way=50, num_trials=50, top_k=1, device='cuda')  # (B,)
+            res_part.append(np.mean(res))  #(n=num_samples,)
         res_list.append(np.mean(res_part))
-        res_list.append(np.max(res_part))
+        res_list.append(np.max(res_part))  # n次采样中n_way_top1 acc最高的
         metric_list.append('top-1-class')
-        metric_list.append('top-1-class (max)')
+        metric_list.append('top-1-class(max)')
 
         return res_list, metric_list    
 
@@ -601,9 +641,16 @@ class LatentDiffusion(DDPM):
             self.scale_factor = scale_factor
         else:
             self.register_buffer('scale_factor', torch.tensor(scale_factor))
-        self.instantiate_first_stage(first_stage_config)
+
+        self.instantiate_first_stage(first_stage_config)  # 实例化一个VQModelInterface模型并设置模型参数不可训
+        # 得到 self.first_stage_model = model.eval(), 从 first_stage_config 载入 VQModelInterface 的参数
+        # first_stage_key = 'image'
+
         self.instantiate_cond_stage(cond_stage_config)
-      
+        # 得到 self.cond_stage_model = model  # model是从ClassEmbedder载入的，并设cond_stage_trainable = True
+        # cond_stage_key = 'fmri'
+        # 注意：在fLDM中被fmri_encoder覆写！
+
         self.cond_stage_forward = cond_stage_forward
         self.clip_denoised = False
         self.bbox_tokenizer = None  
@@ -648,14 +695,15 @@ class LatentDiffusion(DDPM):
 
     def instantiate_first_stage(self, config):
         model = instantiate_from_config(config)
-        self.first_stage_model = model.eval()
+        self.first_stage_model = model.eval()  # 返回的对象仍然是模型(的copy！！！)，只是将模型设置为eval模式
 
     def freeze_diffusion_model(self):
         for param in self.model.parameters():
             param.requires_grad = False
 
     def unfreeze_diffusion_model(self):
-        for param in self.model.parameters():
+        for param in self.model.parameters():  
+            # self.model = DDPM.DuffusionWrapper = modules.diffusionmodules.openaimodel.UNetModel
             param.requires_grad = True
 
     def freeze_cond_stage(self):
@@ -688,7 +736,7 @@ class LatentDiffusion(DDPM):
             param.requires_grad = True
         
     def instantiate_cond_stage(self, config):
-        if not self.cond_stage_trainable:
+        if not self.cond_stage_trainable: # 默认为False, stageB 传入为True
             if config == "__is_first_stage__":
                 print("Using first stage also as cond stage.")
                 self.cond_stage_model = self.first_stage_model
@@ -730,7 +778,8 @@ class LatentDiffusion(DDPM):
         return self.scale_factor * z
 
     def get_learned_conditioning(self, c):
-        self.cond_stage_model.eval()
+        self.cond_stage_model.eval()  
+        # FIXME: 这里其实错了！！！ 调用它的get_input有@torch.no_grad()，而forward调用它时需要trainable
         if hasattr(self.cond_stage_model, 'encode') and callable(self.cond_stage_model.encode):
             c = self.cond_stage_model.encode(c)
         else:
@@ -836,10 +885,10 @@ class LatentDiffusion(DDPM):
         encoder_posterior = self.encode_first_stage(x)
         z = self.get_first_stage_encoding(encoder_posterior).detach()
 
-        if self.model.conditioning_key is not None:
+        if self.model.conditioning_key is not None:  # = self.conditioning_key = 'crossattn'
             if cond_key is None:
-                cond_key = self.cond_stage_key
-            if cond_key != self.first_stage_key:
+                cond_key = self.cond_stage_key  # = 'fmri'
+            if cond_key != self.first_stage_key:  # self.first_stage_key = 'image'
                 if cond_key in ['caption', 'coordinates_bbox','fmri']:
                     xc = batch[cond_key]
                 elif cond_key == 'class_label':
@@ -1013,6 +1062,8 @@ class LatentDiffusion(DDPM):
             return loss
 
     def forward(self, x, c, *args, **kwargs):
+        # import pdb
+        # pdb.set_trace()
         t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
         if self.model.conditioning_key is not None:
             assert c is not None
@@ -1041,7 +1092,7 @@ class LatentDiffusion(DDPM):
             if not isinstance(cond, list):
                 cond = [cond]
             key = 'c_concat' if self.model.conditioning_key == 'concat' else 'c_crossattn'
-            cond = {key: cond}
+            cond = {key: cond}  # 整理成字典才行
 
         x_recon = self.model(x_noisy, t, **cond)
 
@@ -1414,10 +1465,14 @@ class LatentDiffusion(DDPM):
 
     def configure_optimizers(self):
         lr = self.learning_rate
-        if self.train_cond_stage_only:
+        if self.train_cond_stage_only:  # FIXME: UNetModel中也放开一部分参数进行训练
             print(f"{self.__class__.__name__}: Only optimizing conditioner params!")
             cond_parms = [p for n, p in self.named_parameters() 
                     if 'attn2' in n or 'time_embed_condtion' in n or 'norm2' in n]
+            # 'attn2' in: () UNetModel.SpatialTransformer.BasicTransformerBlocker.CrossAttention
+            # 'time_embed_condtion' in: () UNetModel.Sequential(conv_[, linear])
+            # 'norm2' in: () UNetModel.SpatialTransformer.BasicTransformerBlocker.Layernorm
+
             # cond_parms = [p for n, p in self.named_parameters() 
             #         if 'time_embed_condtion' in n]
             # cond_parms = []
@@ -1466,7 +1521,8 @@ class LatentDiffusion(DDPM):
 class DiffusionWrapper(pl.LightningModule):
     def __init__(self, diff_model_config, conditioning_key):
         super().__init__()
-        self.diffusion_model = instantiate_from_config(diff_model_config)
+        self.diffusion_model = instantiate_from_config(diff_model_config) 
+        # dc_ldm.modules.diffusionmodules.openaimodel.UNetModel
         self.conditioning_key = conditioning_key  # 'crossattn'
         assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm']
 

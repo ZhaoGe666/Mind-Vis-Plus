@@ -39,7 +39,7 @@ class MAEforFMRI(nn.Module):
         # MAE encoder specifics
         self.patch_embed = PatchEmbed1D(num_voxels, patch_size, in_chans, embed_dim)
 
-        num_patches = self.patch_embed.num_patches
+        num_patches = self.patch_embed.num_patches  # =4656/16=291
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim), requires_grad=False)  # fixed sin-cos embedding
 
@@ -51,6 +51,7 @@ class MAEforFMRI(nn.Module):
 
         # --------------------------------------------------------------------------
         # MAE decoder specifics
+        # TODO: 在重新训练stageA时修改Decoder中的Norm
         self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
@@ -66,6 +67,7 @@ class MAEforFMRI(nn.Module):
         # --------------------------------------------------------------------------
 
         # nature image decoder specifics
+        # TODO: 在重新训练stageA时修改img_ecoder中的Norm
         if use_nature_img_loss:
             self.nature_img_decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
 
@@ -205,14 +207,14 @@ class MAEforFMRI(nn.Module):
         x, mask, ids_restore = self.random_masking(x, mask_ratio)
 
         # append cls token
-        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_token = self.cls_token + self.pos_embed[:, :1, :]  # (1,1,embed_dim)+(B,1,embed_dim)
         cls_tokens = cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)
 
         # apply Transformer blocks
         for blk in self.blocks:
             x = blk(x)
-        x = self.norm(x)
+        x = self.norm(x)  # stageC 不经过？
 
         return x, mask, ids_restore
 

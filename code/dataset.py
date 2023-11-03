@@ -347,9 +347,11 @@ class Kamitani_dataset(Dataset):
             img_class = self.img_class[index]
             img_class_name = self.img_class_name[index]
             naive_label = torch.tensor(self.naive_label[index])
+            print(type(img))
             return {'fmri': self.fmri_transform(fmri), 'image': self.image_transform(img),
                     'image_class': img_class, 'image_class_name': img_class_name, 'naive_label':naive_label}
         else:
+            print(type(img))
             return {'fmri': self.fmri_transform(fmri), 'image': self.image_transform(img)}
 
 class base_dataset(Dataset):

@@ -22,6 +22,8 @@ class cond_stage_model(nn.Module):
         super().__init__()
         # prepare pretrained fmri mae 
         model = create_model_from_config(metafile['config'], num_voxels, global_pool)  # 初始化一个fmri_encoder对象
+        # 不从config载入 norm_layer
+
         model.load_checkpoint(metafile['model'])  # fmri_encoder对象的参数通过metafile加载
         # 问题是metafile哪来的，stageA也没用到fmri_encoder
         # 破案了，stageA用到的 MAEforFMRI 的state可以用于fmri_encoder，encoder部分是一样的，变量名定义也一样所以可以load_state
@@ -52,29 +54,37 @@ class fLDM:
                  logger=None, ddim_steps=250, global_pool=True, use_time_cond=True):
         self.ckp_path = os.path.join(pretrain_root, 'model.ckpt')
         self.config_path = os.path.join(pretrain_root, 'config.yaml') 
-        config = OmegaConf.load(self.config_path)
+        config = OmegaConf.load(self.config_path)  # LDM的默认参数
         config.model.params.unet_config.params.use_time_cond = use_time_cond  # time step conditioning
         config.model.params.unet_config.params.global_pool = global_pool
 
-        self.cond_dim = config.model.params.unet_config.params.context_dim
+        self.cond_dim = config.model.params.unet_config.params.context_dim  # 只传入cond_stage_model
 
-        model = instantiate_from_config(config.model)  # 一个 LatentDiffusion 对象
-        pl_sd = torch.load(self.ckp_path, map_location="cpu")['state_dict']
+        model = instantiate_from_config(config.model)  # 根据config.yaml的超参初始化一个LatentDiffusion
+        # model.model = DiffusionWrapper  ----> 未冻结
+        # model.first_stage_mode = VQModelInterface; ----> .eavl()
+        # model.cond_stage_model = ClassEmbedder  ----> 未冻结参数
+        pl_sd = torch.load(self.ckp_path, map_location="cpu")['state_dict']  # load 预训练 Latent Diffusion
        
-        m, u = model.load_state_dict(pl_sd, strict=False)
-        model.cond_stage_trainable = True
+        m, u = model.load_state_dict(pl_sd, strict=False)  # missing keys & unexpected keys
+        model.cond_stage_trainable = True  # LDM有 self.cond_stage_trainable 因此不需要再次定义
         model.cond_stage_model = cond_stage_model(metafile, num_voxels, self.cond_dim, global_pool=global_pool)
 
-        model.ddim_steps = ddim_steps
-        model.re_init_ema()
+        # model.cond_stage_model.mae 为一个 fmri_encoder 对象, 还有其他部分！！
+        model.ddim_steps = ddim_steps  # ddpm中有, 不需要再次定义
+        model.re_init_ema() # ddpm有,需要在新的PDfLDM中再次调用，因为参数self.model改变
         if logger is not None:
             logger.watch(model, log="all", log_graph=False)
 
-        model.p_channels = config.model.params.channels
+        model.p_channels = config.model.params.channels 
+        # 要利用LDM中的generate方法，需要(在ldm中)重新定义self.p_channels=self.channels？
+        # FIXME：本身就有，为何不是更改generate(重写的)调用时的参数？
         model.p_image_size = config.model.params.image_size
+        # FIXME: 同上,存在 self.image_size
         model.ch_mult = config.model.params.first_stage_config.params.ddconfig.ch_mult
+        # 调用同上,但参数确实需要更新 self.chult = kwargs[][]...
 
-        self.device = device    
+        self.device = device  # TODO:与lightning对齐
         self.model = model
         self.ldm_config = config
         self.pretrain_root = pretrain_root
@@ -83,28 +93,42 @@ class fLDM:
 
     def finetune(self, trainers, dataset, test_dataset, bs1, lr1,
                 output_path, config=None):
-        config.trainer = None
-        config.logger = None
-        self.model.main_config = config  # finetune时，logger需要替换？
-        self.model.output_path = output_path
+        config.trainer = None  # shit1
+        config.logger = None  # shit2
+        #config.py里没有这两个参数,也不会作为参数传入任何方法
+
+        # TODO： 以下属性需要在新model中
+        self.model.main_config = config  # DDPM 里初始化为None，此处传入实例变量，在full_validation方法中用于保存checkpoint
+        
+        # FIXME: 由于full_validation方法中保存的是self.main_config，
+        # 因此以下配置均不会更新到self.main_config中，包括batch_size,lr等
+        self.model.output_path = output_path  # 
         # self.model.train_dataset = dataset
-        self.model.run_full_validation_threshold = 0.15
+        self.model.run_full_validation_threshold = 0.15  # DDPM 里初始化为0.0，此处传入作用于validation_step方法
         # stage one: train the cond encoder with the pretrained one
       
         # # stage one: only optimize conditional encoders
         print('\n##### Stage One: only optimize conditional encoders #####')
-        dataloader = DataLoader(dataset, batch_size=bs1, shuffle=True)
-        test_loader = DataLoader(test_dataset, batch_size=len(test_dataset), shuffle=False)
-        self.model.unfreeze_whole_model()
-        self.model.freeze_first_stage()
+        dataloader = DataLoader(dataset, batch_size=15, shuffle=True) 
+        test_loader = DataLoader(test_dataset, batch_size=10, shuffle=False)
+        # 默认 first_stage （image）是 freeze 的，cond_stage （fmri）是 trainable 的
+        self.model.unfreeze_whole_model()  # 设置LatentDiffusion所有的参数requires_grad=True
 
-        self.model.learning_rate = lr1
-        self.model.train_cond_stage_only = True
-        self.model.eval_avg = config.eval_avg
+        self.model.freeze_first_stage()  # 冻结 first_stage 
+        #   --------->>> 最后和默认设置一样，只 train condition (fmri) 部分
+
+        self.model.learning_rate = lr1  # FIXME：调用fitune时传入lr1的就是config.lr，闹呢？
+        self.model.train_cond_stage_only = True  # FIXME: Very important but shit setting！！！
+        # LDM初始化时设为False，
+        # 影响LDM的configure_optimizers方法，会只选部分参数给optimizer更新(而不是设置requires_grad)
+        # 将修改参数是否可训练放到方法中，在脚本中修改训练参数，而不是
+        self.model.eval_avg = config.eval_avg # FIXME：init时就传入了，闹呢？
         trainers.fit(self.model, dataloader, val_dataloaders=test_loader)
-
-        self.model.unfreeze_whole_model()
+        # dataloader 中 每个item形状为 {'fmri': self.fmri_transform(fmri), 'image': self.image_transform(img)}
+        # 因此需要在 self.model (LatentDiffusion) 的 forward 中拆分输入
+        self.model.unfreeze_whole_model() # 何苦呢？
         
+        # 这里保存最后一个epoch的dict? config内容也更多，
         torch.save(
             {
                 'model_state_dict': self.model.state_dict(),
@@ -118,6 +142,7 @@ class fLDM:
 
     @torch.no_grad()
     def generate(self, fmri_embedding, num_samples, ddim_steps, HW=None, limit=None, state=None):
+        # TODO: 用此更新LDM中的generate
         # fmri_embedding: n, seq_len, embed_dim
         all_samples = []
         if HW is None:
@@ -166,7 +191,7 @@ class fLDM:
 
         # to image
         grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
-        model = model.to('cpu')
+        model = model.to('cpu')  # FIXME: why?
         
         return grid, (255. * torch.stack(all_samples, 0).cpu().numpy()).astype(np.uint8)
 

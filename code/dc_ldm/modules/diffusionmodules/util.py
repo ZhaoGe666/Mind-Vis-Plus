@@ -94,9 +94,10 @@ def betas_for_alpha_bar(num_diffusion_timesteps, alpha_bar, max_beta=0.999):
 
 
 def extract_into_tensor(a, t, x_shape):
-    b, *_ = t.shape
-    out = a.gather(-1, t)
-    return out.reshape(b, *((1,) * (len(x_shape) - 1)))
+    b, *_ = t.shape  # b=B
+    out = a.gather(-1, t)  # 从schedule表里取出B个值
+    # x_shape = [B,3,64,64]
+    return out.reshape(b, *((1,) * (len(x_shape) - 1)))  # reshape 成(B,1,1,1)
 
 
 def checkpoint(func, inputs, params, flag):

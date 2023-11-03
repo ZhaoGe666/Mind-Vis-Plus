@@ -69,18 +69,19 @@ def get_eval_metric(samples, avg=True):
     return res_list, metric_list
                
 def generate_images(generative_model, fmri_latents_dataset_train, fmri_latents_dataset_test, config):
+    # train set
     grid, _ = generative_model.generate(fmri_latents_dataset_train, config.num_samples, 
                 config.ddim_steps, config.HW, 10) # generate 10 instances
     grid_imgs = Image.fromarray(grid.astype(np.uint8))
-    grid_imgs.save(os.path.join(config.output_path, 'samples_train.png'))
+    grid_imgs.save(os.path.join(config.output_path, 'samples_train.png'))  # 所有的生成的栅格排列图像
     wandb.log({'summary/samples_train': wandb.Image(grid_imgs)})
-
+    # valid set
     grid, samples = generative_model.generate(fmri_latents_dataset_test, config.num_samples, 
                 config.ddim_steps, config.HW)
     grid_imgs = Image.fromarray(grid.astype(np.uint8))
     grid_imgs.save(os.path.join(config.output_path,f'./samples_test.png'))
-    for sp_idx, imgs in enumerate(samples):
-        for copy_idx, img in enumerate(imgs[1:]):
+    for sp_idx, imgs in enumerate(samples):  # img --> tuple(all_samples, state)
+        for copy_idx, img in enumerate(imgs[1:]):  # 按照state迭代？但可以取img？
             img = rearrange(img, 'c h w -> h w c')
             Image.fromarray(img).save(os.path.join(config.output_path, 
                             f'./test{sp_idx}-{copy_idx}.png'))
@@ -136,7 +137,11 @@ def main(config):
     if config.dataset == 'GOD':
         fmri_latents_dataset_train, fmri_latents_dataset_test = create_Kamitani_dataset(config.kam_path, config.roi, config.patch_size, 
                 fmri_transform=fmri_transform, image_transform=[img_transform_train, img_transform_test], 
-                subjects=config.kam_subs)
+                subjects=config.kam_subs)  
+        # train和test分别为Kamitani_dataset对象
+        # getitem得到 {'fmri': self.fmri_transform(fmri), 'image': self.image_transform(img)}
+        # train: 'fmri' (1200,4656), 'image' (1200,256,256,3)
+        # test:  'fmri' (50  ,4656), 'image' (50  ,256,256,3)
         num_voxels = fmri_latents_dataset_train.num_voxels
     elif config.dataset == 'BOLD5000':
         fmri_latents_dataset_train, fmri_latents_dataset_test = create_BOLD5000_dataset(config.bold5000_path, config.patch_size, 
@@ -148,6 +153,7 @@ def main(config):
 
     # prepare pretrained mbm 
     pretrain_mbm_metafile = torch.load(config.pretrain_mbm_path, map_location='cpu')
+    # {'model': OrderedDict([]), 'optimizer':{'state':{},'param_groups':[]}, 'epoch':9, 'scaler':{},'config':Config}
     # create generateive model
     generative_model = fLDM(pretrain_mbm_metafile, num_voxels,
                 device=device, pretrain_root=config.pretrain_gm_path, logger=config.logger, 
@@ -200,8 +206,8 @@ def get_args_parser():
 
     return parser
 
-def update_config(args, config):
-    for attr in config.__dict__:
+def update_config(args, config): # 用命令行传入的参数更新默认config中的参数
+    for attr in config.__dict__: 
         if hasattr(args, attr):
             if getattr(args, attr) != None:
                 setattr(config, attr, getattr(args, attr))
@@ -215,8 +221,8 @@ def create_readme(config, path):
 
 def create_trainer(num_epoch, precision=32, accumulate_grad_batches=2,logger=None,check_val_every_n_epoch=0):
     acc = 'gpu' if torch.cuda.is_available() else 'cpu'
-    devices = [0,5,6,7]  # FIXME:???
-    return pl.Trainer(accelerator=acc, max_epochs=num_epoch, logger=logger, 
+    devices = [7]  # FIXME:???
+    return pl.Trainer(accelerator=acc, strategy='ddp',max_epochs=num_epoch, logger=logger, 
             precision=precision, accumulate_grad_batches=accumulate_grad_batches,
             enable_checkpointing=False, enable_model_summary=False, gradient_clip_val=0.5,
             check_val_every_n_epoch=check_val_every_n_epoch,devices=devices)
@@ -227,8 +233,8 @@ if __name__ == '__main__':
     config = Config_Generative_Model()
     config = update_config(args, config)
     
-    if config.checkpoint_path is not None:
-        model_meta = torch.load(config.checkpoint_path, map_location='cpu')
+    if config.checkpoint_path is not None:  # config里是空的
+        model_meta = torch.load(config.checkpoint_path, map_location='cpu')  # 包含
         ckp = config.checkpoint_path
         config = model_meta['config']
         config.checkpoint_path = ckp  # 更新config中ckp为读取的ckp

@@ -216,7 +216,7 @@ class PLMSSampler(object):
             x_prev = a_prev.sqrt() * pred_x0 + dir_xt + noise
             return x_prev, pred_x0
 
-        e_t = get_model_output(x, t)
+        e_t = get_model_output(x, t)  # 模型估计的t时刻噪音
         if len(old_eps) == 0:
             # Pseudo Improved Euler (2nd order)
             x_prev, pred_x0 = get_x_prev_and_pred_x0(e_t, index)
