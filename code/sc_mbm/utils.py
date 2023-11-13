@@ -83,8 +83,8 @@ def adjust_learning_rate(optimizer, epoch, config):
     return lr
 
 
-def save_model(config, epoch, model, optimizer, loss_scaler, checkpoint_paths):
-    os.makedirs(checkpoint_paths, exist_ok=True)
+def save_model(config, epoch, model, optimizer, loss_scaler, checkpoint_dir):
+    os.makedirs(checkpoint_dir, exist_ok=True)
     to_save = {
         'model': model.state_dict(),
         'optimizer': optimizer.state_dict(),
@@ -92,7 +92,7 @@ def save_model(config, epoch, model, optimizer, loss_scaler, checkpoint_paths):
         'scaler': loss_scaler.state_dict(),
         'config': config,
     }
-    torch.save(to_save, os.path.join(checkpoint_paths, 'checkpoint.pth'))
+    torch.save(to_save, os.path.join(checkpoint_dir, f'MAEforFMRI_epoch{epoch}.ckpt'))
     
 
 def load_model(config, model, checkpoint_path ):

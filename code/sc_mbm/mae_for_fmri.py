@@ -390,7 +390,7 @@ class fmri_encoder(nn.Module):
         else:
             state_dict = {k: v for k, v in state_dict.items() if ('mask_token' not in k)}
         ut.interpolate_pos_embed(self, state_dict)
-        # TODO: 作用？插值前后维度: (1,263,1024)-->(1,292,1024)    
+        # FIXME: 作用？插值前后维度: (1,263,1024)-->(1,292,1024)    
         m, u = self.load_state_dict(state_dict, strict=False)
         print('missing keys:', u)
         print('unexpected keys:', m)

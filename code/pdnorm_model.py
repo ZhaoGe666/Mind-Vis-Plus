@@ -1,11 +1,17 @@
 
 
 import os
+import time
 import torch
 import numpy as np
 from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
+
+from torchmetrics.image.fid import FrechetInceptionDistance
+from torchmetrics.image import StructuralSimilarityIndexMeasure
+from torchmetrics.classification import MulticlassAccuracy
+from torchvision.models import ViT_L_16_Weights, vit_l_16
 
 from tqdm import tqdm
 from PIL import Image
@@ -152,6 +158,7 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
                  num_timesteps_cond=None, cond_stage_key='fmri', cond_stage_trainable=True, 
                  concat_mode=True, cond_stage_forward=None, conditioning_key=None, 
                  scale_factor=1, scale_by_std=False, *args, **kwargs):
+        # print('\U0001F642'*2, f' {self.__class__.__name__}: initializing...', '\U0001F642'*2)
         super().__init__(first_stage_config, cond_stage_config, 
                          num_timesteps_cond, cond_stage_key, cond_stage_trainable, 
                          concat_mode, cond_stage_forward, conditioning_key, 
@@ -209,7 +216,9 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
         self.unfreeze_whole_model()
         self.freeze_first_stage()
         # self.train_cond_stage_only = True # 设置标志位，见configure_optimizers
-        self.count_trainable_parameters()
+        # print('\U0001F642'*2, f' {self.__class__.__name__}: initialized!', '\U0001F642'*2)
+        # self.count_trainable_parameters()
+
     
     def count_trainable_parameters(self):
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -233,45 +242,68 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
         missing_keys, unexpected_keys = self.load_state_dict(original_state_dict, strict=False)
         # print('Missing Keys:')
         for mk in missing_keys:
-            assert 'mlp_' in mk or 'decoder' in mk or 'embed_subject' in mk, f'{mk}'
-        print('*'*30+' State dict are successfully loaded! '+'*'*30)
+            assert 'mlp_' in mk or 'decoder' in mk or 'embed_subject' in mk, f'\U0001F60E missing param: {mk}'
+        print('\U0001F60E'*2 + f' {self.__class__.__name__}: State dict of fLDM (from stageB) successfully loaded! '+'\U0001F60E'*2)
+
+
+    def state_from_fmri_encoder(self, original_state_dict): 
+        del original_state_dict['mask_token']
+        del original_state_dict['pos_embed']
+        del original_state_dict['decoder_pos_embed']
+        missing_keys, unexpected_keys = self.cond_stage_model.mae.load_state_dict(original_state_dict, strict=False)
+        # print('Missing Keys:')
+        for uk in unexpected_keys: 
+            assert 'decoder' in uk or 'norm' in uk, f'\U0001F605 unexpected param: {uk} '
+        print('\U0001F605'*2+' State dict of fmri encoder (from stage A) is successfully loaded! '+'\U0001F605'*2)
+
+    def state_from_LDM(self, original_state_dict): 
+        missing_keys, unexpected_keys = self.load_state_dict(original_state_dict, strict=False)
+        # print('Missing Keys:')
+        for mk in missing_keys:  # 先使用
+            assert 'mlp_' in mk or \
+                'cond_stage_model' in mk or \
+                'embed_subject' in mk or \
+                'time_embed_condtion' in mk, f'\U0001F60F missing param: {mk}'
+        print('\U0001F60F'*2+' State dict of LDM is successfully loaded! '+'\U0001F60F'*2)
     
-    def unfreeze_stageC_params(self, unfreeze_all_pdnorm: bool=False):
+    def unfreeze_stageC_params(self):
         # unfreeze the 
 
-        cond_params = list(self.cond_stage_model.parameters())
-        partial_unet_params = [p for n, p in self.named_parameters() 
-                    if 'time_embed_condtion' in n or 'attn2' in n or 'norm2' in n] 
+        cond_params = list(self.cond_stage_model.parameters())  # 502 个参数，包含49个norm
+        unet_cond_params = [p for n, p in self.model.named_parameters() 
+                    if 'time_embed_condtion' in n or 'attn2' in n]   # Unet 150/ self 300
         # 'time_embed_condtion'  () UNetModel.Sequential(conv_[, linear])
         # 'attn2'                () UNetModel.SpatialTransformer.BasicTransformerBlocker.CrossAttention
         # 'norm2'                () UNetModel.SpatialTransformer.BasicTransformerBlocker.Layernorm
-        if unfreeze_all_pdnorm:
             # 除了以上两部分参数包含的pdnorm，将外部的pdnorm也放开训练
             # 已知cond_stage_model.mae.decoder_blocks和first_stage_model中没有pdnorm，因此额外的pdnorm只存在于unet
             # num_instances_pdnorm: 158 = 49(cond_stage_model) + 109(unet_model)
-            additional_pdnorm_params = []
-            for name,module in self.model.named_modules():
-                if isinstance(module,PDNorm):
-                    additional_pdnorm_params.extend(list(module.parameters()))
-            unfreezed_params = cond_params + list(set(partial_unet_params + additional_pdnorm_params)) # 后两项有交集
-        else:
-            # 当前params中只包含16个pdnorm实例,64个参数
-            unfreezed_params = cond_params + partial_unet_params
+        unet_pdnorm_params = []
+        for name, module in self.model.named_modules():
+            if isinstance(module, PDNorm):
+                unet_pdnorm_params.extend(list(module.parameters()))
+        prompt_embed_params = list(self.embed_subject.parameters())
+        if self.enable_multi_dataset:
+            prompt_embed_params.extend(list(self.embed_dataset.parameters()))
+        unfreezed_params = cond_params + unet_cond_params + unet_pdnorm_params + prompt_embed_params
+
         self.freeze_whole_model()
         for p in unfreezed_params: # save VRAM when computing gradients
                 p.requires_grad = True
-        self.count_trainable_parameters()
+        if self.global_rank == 0:
+            self.count_trainable_parameters()
         return unfreezed_params
 
     def configure_optimizers(self):
 
         # if self.train_cond_stage_only = True
-        unfreezed_params = self.unfreeze_stageC_params(unfreeze_all_pdnorm=False)
-
-        print('Setting up optimizer......Only optimize parameters from:\n',
-            '     (1) cond_stage_model (whole)\n',
-            '     (2) unet_model (cross_attention_heads, projection_heads and partial pdnorms)!')
-        
+        unfreezed_params = self.unfreeze_stageC_params()
+        if self.global_rank == 0:
+            print(f'Rank{self.global_rank}: Unfreezing {len(unfreezed_params)} tensors and setting up the optimizer...\n',
+                'Only optimize parameters from:\n',
+                '     (1) cond_stage_model (whole)\n',
+                '     (2) unet_model (cross_attention_heads, projection_heads and all pdnorms)\n',
+                '     (3) prompt_embed')
         opt = torch.optim.AdamW(unfreezed_params, lr=self.learning_rate)
 
         # if self.use_scheduler:
@@ -443,7 +475,7 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
             subject_idx = batch['subject']
             dataset_embedding = self.embed_dataset(dataset_idx)  # (batch_size, dim_dataset_embedding)
             subject_embedding = self.embed_subject(subject_idx)  # (batch_size, dim_subject_embedding)
-            prompt_embedding = torch.concat([dataset_embedding, subject_embedding])  # TODO: 注意维度
+            prompt_embedding = torch.cat([dataset_embedding, subject_embedding])  # TODO: 注意维度
         else: # 本model只支持加入prompt的情况，即使用“multi-dataset” 或 “multi_subject + multi_dataset”
             raise NotImplementedError
         return prompt_embedding
@@ -467,7 +499,7 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
             
         loss, loss_dict = self.shared_step(batch)
 
-        self.log_dict(loss_dict, prog_bar=True,
+        self.log_dict(loss_dict, 
                     logger=True, on_step=False, on_epoch=True)
 
         if self.use_scheduler:
@@ -525,24 +557,51 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
     def validation_step(self, batch, batch_idx):
         # if self.trainer.current_epoch == 0:
         #     return
-        n_partial_sampling = None if (self.trainer.current_epoch+1)%50==0 else 5
-        n_random_sampling = 5 if (self.trainer.current_epoch+1)%50==0 else 3
+        assert batch_idx == 0, '\U0001F630'*10
+        if self.global_rank == 0:
+            start_time = time.time()
+            print('\U0001F3A8'*2,f'Epoch{self.trainer.current_epoch}: generating images and calculating metrics',end='...') 
+        n_partial_sampling = None if (self.trainer.current_epoch+1)%100==0 else 5  # 每100个epoch对rank0的所有sample进行记录
+        # n_random_sampling = 5 if (self.trainer.current_epoch+1)%50==0 else 3
+        n_random_sampling = 3  # 采样3个够了
+        ##############################################
+        # if self.global_rank == 0:
+        #     start_time_generating = time.time()
+        #     print('\U0001F559 generating images...')
+        ##############################################
         grid, all_samples, state = self.generate(batch, batch_idx, ddim_steps=self.ddim_steps, 
                                                  num_samples=n_random_sampling, limit=n_partial_sampling)
         #  all_samples:(B,num_samples+1,3,256,256)
+        ##############################################
+        # if self.global_rank == 0:
+        #     end_time_generating = time.time()
+        #     print(f"\U0001F559 generating images: costs {(end_time_generating - start_time_generating)/60:.2f} mins")
+        #     print('\U0001F559 getting eval metrics...')
+        ##############################################
+        all_samples = all_samples.cpu().numpy()
         metrics, metric_keys = self.get_eval_metric(all_samples, avg=self.eval_avg) # 耗时
         # ['mse', 'pcc', 'ssim', 'psm', 'top-1-class', 'top-1-class(max)'] 元素均为标量
         # metric_dict = {f'val/{k}':v for k, v in zip(metric_keys, metrics)}
+        ##############################################
+        # if self.global_rank == 0:
+        #     end_time_getting_metrics = time.time()
+        #     print(f"\U0001F559 getting eval metrics: costs {(end_time_getting_metrics - end_time_generating)/60:.2f} mins")
+        #     print('\U0001F559 logging images...')
+        ##############################################
         metric_dict = {k:v for k, v in zip(metric_keys, metrics)}
         metric_dict_log = {f'val/{k}':v for k,v in metric_dict.items()}
         # self.logger.log_metrics(metric_dict, step=self.trainer.current_epoch)  
-        self.log_dict(metric_dict_log, prog_bar=True,
+        self.log_dict(metric_dict_log, 
                     logger=True, on_step=False, on_epoch=True)  # rank 0 only!!!会在当前epoch平均
         if self.global_rank == 0 and batch_idx == 0:  # 只在rank0的batch0记录图像，只看一部分
             grid_image = Image.fromarray(grid.astype(np.uint8))
-            print(f'RANK{self.global_rank}-Batch{batch_idx}: logging images to the logger...')
-            self.logger.log_image(key=f'samples_val', images=[grid_image], step=self.trainer.current_epoch)
-            print(f'RANK{self.global_rank}-Batch{batch_idx}: logging finished!')
+            # print(f'RANK{self.global_rank}-Batch{batch_idx}: logging images to the logger...')
+            self.logger.log_image(key=f'samples_val', images=[grid_image])
+            # print(f'RANK{self.global_rank}-Batch{batch_idx}: logging finished!')
+            ##############################################
+            # end_time_logging_images = time.time()
+            # print(f"\U0001F559 logging images: costs {(end_time_logging_images - end_time_getting_metrics)/60:.2f} mins")
+            ##############################################
         # naive_label = batch['naive_label']  # 150~199一对一的50个标量
         # subject_idx = batch['subject_idx']
         # return {'sampled_images':all_samples,  # (B,num_samples+1,3,256,256)
@@ -550,31 +609,11 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
         #         'subject':subject_idx, # (B,)
         #         'naive_label':naive_label  # (B,)
         #         }
-        
-    def concat_images(self, sampled_images, subject_idx, naive_label):
-        '''
-        暂时适用于GOD数据集中每个subject的每张gt图只有一个sample的情况
-        '''
-        all_sampled_images = torch.stack(sampled_images)  # (250+,num_samples+1,3,256,256)
-        all_subject_idx = torch.stack(subject_idx)  # (250+,)
-        all_naive_label = torch.stack(naive_label)  # (250+,)
-        # 按照subject_idx取samples
-        num_subjects = 5
-        concated_image_list = []
-        for i in range(num_subjects):
-            selected_images = all_sampled_images[all_subject_idx == i]
-            selected_naive_labels = all_naive_label[all_subject_idx == i]
+        if self.global_rank == 0:
+            end_time = time.time()
+            print(f'finished, costig {(end_time - start_time)/60:.1f} mins', '\U0001F3A8'*2)
 
-            sorted_naive_labels, indices= torch.sort(selected_naive_labels)
-            sorted_images = selected_images[indices]
-            sorted_images = torch.gather(selected_images,0,indices)
-
-            unique_sorted_naive_labels, unique_indices = np.unique(sorted_naive_labels, return_index=True)
-            xx = sorted_naive_labels[unique_indices] # 应该与unique_sorted_naive_label一致
-            unique_sorted_images = sorted_images[unique_indices]
-            concated_image_list.append(unique_sorted_images)
-        concated_images = torch.stack(concated_image_list)  # (5,50,3,n+1,256,256)
-        return concated_images
+    
 
     # def validation_epoch_end(self, validation_step_outputs):
     #     sampled_images = validation_step_outputs['sampled_images']
@@ -632,7 +671,9 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
         model.eval()   
         all_samples = []
         with model.ema_scope():
-            for count, item in enumerate(zip(batch['fmri'], batch['image'], batch['subject'])):
+            for count, item in tqdm(enumerate(zip(batch['fmri'], batch['image'], batch['subject'])),
+                                    desc=f'Batch{batch_idx}',
+                                    total=batch['subject'].shape[0]):
                 # print('\U0001F92C'*40)  
                 # print('item0-->fmri.shape',item[0].shape)
                 # print('item1-->image.shape',item[1].shape)
@@ -643,7 +684,7 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
                 latent = item[0] # fmri embedding
                 gt_image = rearrange(item[1], 'h w c -> 1 c h w') # h w c
                 prompt = self.embed_subject(item[2])  # p added!!!
-                print(f"RANK{self.global_rank}-Batch{batch_idx}: rendering {num_samples} examples in {ddim_steps} steps.")
+                # print(f"RANK{self.global_rank}-Batch{batch_idx}-Sample{count}: rendering {num_samples} examples in {ddim_steps} steps.")
                 latent = repeat(latent, 'c d -> n c d', n=num_samples).to(self.device)
                 p = repeat(prompt, 'd -> n d', n=num_samples).to(self.device)
                 c = model.conditioning_forward(latent,p)
@@ -658,41 +699,253 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
                 x_samples_ddim = torch.clamp((x_samples_ddim+1.0)/2.0,min=0.0, max=1.0)
                 gt_image = torch.clamp((gt_image+1.0)/2.0,min=0.0, max=1.0)
                 
-                all_samples.append(torch.cat([gt_image.detach().cpu(), x_samples_ddim.detach().cpu()], dim=0)) # put groundtruth at first
-        
+                all_samples.append(torch.cat([gt_image.detach(), x_samples_ddim.detach()], dim=0)) # put groundtruth at first
+        all_samples = (255*(torch.stack(all_samples))).to(torch.uint8)
         # display as grid
-        grid = torch.stack(all_samples, 0)
-        grid = rearrange(grid, 'n b c h w -> (n b) c h w')
+        # grid = torch.stack(all_samples, 0)
+        grid = rearrange(all_samples, 'n b c h w -> (n b) c h w')
         grid = make_grid(grid, nrow=num_samples+1)
 
         # to image
-        grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
+        grid = rearrange(grid, 'c h w -> h w c').cpu().numpy()
         # model = model.to('cpu')
-        return grid, (255. * torch.stack(all_samples, 0).cpu().numpy()).astype(np.uint8), state
-    
-    @torch.no_grad()
-    def test_step(self, batch, batch_idx):
-        # if self.trainer.current_epoch == 0:
-        #     return
-        n_partial_sampling = None if (self.trainer.current_epoch+1)%50==0 else 5
-        n_random_sampling = 5 if (self.trainer.current_epoch+1)%50==0 else 3
-        grid, all_samples, state = self.generate(batch, batch_idx, ddim_steps=self.ddim_steps, 
-                                                 num_samples=n_random_sampling, limit=n_partial_sampling)
-        #  all_samples:(B,num_samples+1,3,256,256)
-        metrics, metric_keys = self.get_eval_metric(all_samples, avg=self.eval_avg) # 耗时
-        # ['mse', 'pcc', 'ssim', 'psm', 'top-1-class', 'top-1-class(max)'] 元素均为标量
-        # metric_dict = {f'val/{k}':v for k, v in zip(metric_keys, metrics)}
-        metric_dict = {k:v for k, v in zip(metric_keys, metrics)}
-        metric_dict_log = {f'val/{k}':v for k,v in metric_dict.items()}
-        # self.logger.log_metrics(metric_dict, step=self.trainer.current_epoch)  
-        self.log_dict(metric_dict_log, prog_bar=True,
-                    logger=True, on_step=False, on_epoch=True)  # rank 0 only!!!会在当前epoch平均
-        if self.global_rank == 0 and batch_idx == 0:  # 只在rank0的batch0记录图像，只看一部分
-            grid_image = Image.fromarray(grid.astype(np.uint8))
-            print(f'RANK{self.global_rank}-Batch{batch_idx}: logging images to the logger...')
-            self.logger.log_image(key=f'samples_val', images=[grid_image], step=self.trainer.current_epoch)
-            print(f'RANK{self.global_rank}-Batch{batch_idx}: logging finished!')
+        return grid, all_samples, state
 
+    @torch.no_grad()  # TODO
+    def generate_paralle(self, batch, batch_idx, num_samples, ddim_steps=250, HW=None, limit=None, state=None):
+        if HW is None:
+            shape = (self.channels, self.image_size, self.image_size)  # (3,64,64)
+        else:
+            num_resolutions = len(self.ch_mult)
+            shape = (self.channels,
+                    HW[0] // 2 ** (num_resolutions - 1), HW[1] // 2 ** (num_resolutions - 1))
+
+        model = self
+        sampler = PD_PLMSSampler(model)
+        model.eval()
+
+        if torch.cuda.is_available():
+            state = torch.cuda.get_rng_state() if state is None else state
+            torch.cuda.set_rng_state(state)
+        else:
+            state = torch.get_rng_state() if state is None else state
+            torch.set_rng_state(state)
+
+        all_samples = []
+        n = 5 # empirical_num_of_grouping_for_parallel_sampling = 3
+        batch_size = batch['fmri'].size(0)
+        assert batch_size%n == 0, \
+            f"The empirical num {n} n must be divided by the batch size {batch['fmri'].size(0)} in val!"
+        with model.ema_scope():
+            grouped_fmri = [batch['fmri'][i:i + n] for i in range(0, batch['fmri'].size(0), n)]
+            grouped_images = [batch['image'][i:i + n] for i in range(0, batch['image'].size(0), n)]
+            grouped_subjects = [batch['subject'][i:i + n] for i in range(0, batch['subject'].size(0), n)]
+
+            for group_idx, (fmri_group, image_group, subject_group) in enumerate(zip(grouped_fmri, grouped_images, grouped_subjects)):
+                latent_group = torch.stack(fmri_group)  # (g, [xx,)
+                gt_image_group = rearrange(torch.stack(image_group), 'g h w c -> g c h w')
+                prompt_group = torch.stack([self.embed_subject(subj) for subj in subject_group])  # (g, [xx,)
+
+                sub_batch_size = n
+                # print(f"RANK{self.global_rank}-Batch{batch_idx}-Group{group_idx}: rendering {sub_batch_size} examples in {ddim_steps} steps.")
+                latent_group = latent_group.to(self.device)
+                prompt_group = prompt_group.to(self.device)
+
+                c = model.conditioning_forward(latent_group, prompt_group)
+                samples_ddim, _ = sampler.sample(S=ddim_steps,
+                                                prompt=prompt_group,
+                                                conditioning=c,
+                                                batch_size=sub_batch_size,
+                                                shape=shape,
+                                                verbose=False)
+
+                x_samples_ddim = model.decode_first_stage(samples_ddim)
+                x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+                gt_image_group = torch.clamp((gt_image_group + 1.0) / 2.0, min=0.0, max=1.0)
+
+                all_samples.extend([torch.cat([gt.detach().cpu(), x.detach().cpu()], dim=0) for gt, x in zip(gt_image_group, x_samples_ddim)])
+
+        # Display as grid
+        grid = torch.stack(all_samples, 0)
+        grid = rearrange(grid, 'n b c h w -> (n b) c h w')
+        grid = make_grid(grid, nrow=sub_batch_size + 1)
+
+        # to image
+        grid = 255. * rearrange(grid, 'c h w -> h w c').cpu().numpy()
+
+        return grid, (255. * torch.stack(all_samples, 0).cpu().numpy()).astype(np.uint8), state
+
+    
+    @torch.no_grad() 
+    def test_step(self, batch, batch_idx):
+        # if self.subset == 'train' and batch_idx != 0:
+        #     return
+        start_time_generating = time.time()
+        print('\U0001F3A8'*2,f'Epoch{self.global_step}: generating images',end='......') 
+        n_partial_sampling = 2 if self.subset == 'train' else None # 默认的batch_size为50
+        num_samples = 5  
+        # ##############################################################
+        # all_samples = rearrange(torch.clamp((batch['image']+1.0)/2.0,min=0.0,max=1.0), 'b h w c -> b c h w')
+        # all_samples = repeat(all_samples, 'b c h w -> b n c h w', n=num_samples+1)
+        # all_samples = (255. * all_samples).to(torch.uint8)
+        # ##############################################################
+        grid, all_samples, state = self.generate(batch, batch_idx, ddim_steps=self.ddim_steps, 
+                                                 num_samples=num_samples, limit=n_partial_sampling)
+        assert all_samples.dtype == torch.uint8, f'all_samples.dtype={all_samples.dtype}' # FIXME
+        # all_samples: (B, 1+n_random_samples, 3, 256, 256), [0,255], (torch.uint8)
+        end_time_generating = time.time()
+        print(f"costs {(end_time_generating - start_time_generating)/60:.2f} mins")
+        print('\U0001F4C8'*2, 'calculating eval metrics (fid, ssim, top-5-acc and top-50-acc)',end='......')
+        
+        all_imgs = all_samples/255.  # [0,1], torch.float32
+        assert all_samples.dtype == torch.uint8, f'all_samples.dtype={all_samples.dtype}' # FIXME
+        B, N, C, H, W = all_imgs.shape
+        assert num_samples == N - 1
+        # target = torch.tensor(sample_imgs[:,0,:,:,:], device=torch.device(self.device))
+        target_imgs = all_imgs[:,0,:,:,:]  # (B,C,H,W) (torch.uint8) [0,255]
+        sampled_imgs = all_imgs[:,1:,:,:,:]
+        
+        # fid 对两个set进行比较,不用等长?
+        self.fid.update(target_imgs, real=True)  # (torch.uint8) [0,255] 
+        self.fid.update(sampled_imgs.reshape(B*num_samples,C,H,W), real=False)
+        fid = self.fid.compute()
+        # 其余指标必须返回成对(pred,target)
+        
+        ssim_list = []
+        top_5_acc_list = []
+        top_50_acc_list = []
+        # def topk_acc(output, target, topk=(1,)):
+        #     maxk = max(topk)
+        #     batch_size = target.size(0)
+
+        #     _, pred = output.topk(maxk, 1, True, True)
+        #     pred = pred.t()
+        #     correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+        #     res = []
+        #     for k in topk:
+        #         correct_k = correct[:k].reshape(-1).float().sum(0)
+        #         res.append(correct_k.mul_(1.0 / batch_size))
+        #     return res
+        # from sklearn.metrics import top_k_accuracy_score
+
+        label = batch['imagenet_1k_class'][:n_partial_sampling] if n_partial_sampling is not None else batch['imagenet_1k_class']
+        for i in range(num_samples):
+            ssim = self.ssim(sampled_imgs[:,i,:,:,:], target_imgs)  # scalar
+            ssim_list.append(ssim.cpu().numpy())
+            pred_logits = self.classifier(self.classifier_img_transform(sampled_imgs[:,i,:,:,:]))  # (B,1000)
+            top_5_acc = self.top_5_acc(pred_logits, label)
+            # top_5_acc_wtf = topk_acc(pred_logits,label,topk=(5,))
+            top_5_acc_list.append(top_5_acc.cpu().numpy())
+            top_50_acc = self.top_50_acc(pred_logits, label) 
+            # top_50_acc_wtf = topk_acc(pred_logits,label,topk=(50,))
+            top_50_acc_list.append(top_50_acc.cpu().numpy())
+        end_time_getting_metrics = time.time()
+        print(f"costs {(end_time_getting_metrics - end_time_generating)/60:.2f} mins")
+        print('\U0001F4E4'*2, 'logging metrics', end='......')
+        ssim_avg = np.mean(ssim_list)
+        top_5_acc_avg = np.mean(top_5_acc_list)
+        top_50_acc_avg = np.mean(top_50_acc_list)
+        metric_dict = {'fid': fid,
+                       'ssim': ssim_avg,
+                       'top-5-acc':top_5_acc_avg,
+                       'top-50-acc':top_50_acc_avg}
+        metric_dict_log = {f'{self.subset}/{k}':v for k,v in metric_dict.items()}
+        self.log_dict(metric_dict_log, 
+                    logger=True, on_step=False, on_epoch=True)
+        end_time_logging = time.time()
+        print(f"costs {(end_time_logging - end_time_getting_metrics)/60:.2f} mins")
+        if n_partial_sampling is not None:
+            return {'sampled_images': all_samples[:n_partial_sampling],
+                    'subject': batch['subject'][:n_partial_sampling],
+                    'naive_label': batch['naive_label'][:n_partial_sampling]}
+        return {'sampled_images': all_samples,
+                'subject': batch['subject'],
+                'naive_label': batch['naive_label']}
+
+    def on_test_start(self):
+        # pass
+        assert self.subset is not None, \
+            '\U0001F605'*2 + 'My fault! but add this attribute in your script plz!' + '\U0001F62C'*2
+        print('\n','\U0001F924'*2, f' {self.subset} set | on test start: initializing metrics......')
+        self.fid = FrechetInceptionDistance(feature=2048, reset_real_features=False, normalize=True).to(self.device)
+        self.ssim = StructuralSimilarityIndexMeasure(reduction='elementwise_mean').to(self.device)
+        self.top_5_acc = MulticlassAccuracy(num_classes=1000,top_k=5).to(self.device)
+        # self.top_5_acc_train = MulticlassAccuracy(num_classes=200,top_k=5)
+        # self.top_5_acc_valid = MulticlassAccuracy(num_classes=50,top_k=5)
+        self.top_50_acc = MulticlassAccuracy(num_classes=1000,top_k=50).to(self.device)
+        self.classifier = vit_l_16(weights=ViT_L_16_Weights.DEFAULT).to(self.device)
+        self.classifier_img_transform = ViT_L_16_Weights.DEFAULT.transforms().to(self.device)
+
+    def test_epoch_end(self, test_step_outputs):
+        start_time = time.time() 
+        print('\U0001F4E4'*2, 'logging images', end='......')
+        sampled_images_list = []
+        subject_idx_list = []
+        naive_label_list = []
+        for step_output in test_step_outputs:
+            sampled_images_list.append(step_output['sampled_images'])
+            subject_idx_list.append(step_output['subject'])
+            naive_label_list.append(step_output['naive_label'])
+        sampled_images = torch.cat(sampled_images_list)
+        assert sampled_images.dtype == torch.uint8, f'sampled_images.dtype={sampled_images.dtype}' # FIXME
+        subject_idx = torch.cat(subject_idx_list)  # GOD数据集中5个subject按0~4索引
+        naive_label = torch.cat(naive_label_list)  # GOD数据集中50个类别的naive_label取值范围为150~199
+
+        grouped_images = self.grouping_images(sampled_images, subject_idx, naive_label, n_partial_sampling=10)
+        assert grouped_images.dtype == torch.uint8, f'grouped_images.dtype={grouped_images.dtype}' # FIXME
+        # (5,50,n+1,3,256,256) [0,255] torch.uint8
+        # 分subject存
+        grid_images = []
+        for i in range(grouped_images.shape[0]):  # 5个subject分别make grid
+            images = rearrange(grouped_images[i], 'b n c h w -> (b n) c h w')
+            grid = make_grid(images, nrow=grouped_images.shape[2])
+            grid_rgb = rearrange(grid, 'c h w -> h w c')
+            assert grid_rgb.dtype == torch.uint8, f'grid_rgb.dtype={grid_rgb.dtype}' # FIXME
+            grid_PIL= Image.fromarray(grid_rgb.cpu().numpy())
+            grid_images.append(grid_PIL)
+
+        self.logger.log_image(key=f'{self.subset}/sampled images', 
+                              images=grid_images, 
+                              caption=['sub1','sub2','sub3','sub4','sub5'])
+        end_time = time.time()
+        print(f"costs {(end_time - start_time)/60:.2f} mins")
+
+    def grouping_images(self, sampled_images, subject_idx, naive_label, n_partial_sampling=10):
+        '''
+        暂时适用于GOD数据集中每个subject的每张gt图只有一个sample的情况
+        '''
+        # sampled_images: (250+,1+num_samples,3,256,256)
+        # subject_idx: (250+,)
+        # naive_label: (250+,)
+        # 按照subject_idx取samples
+        _, counts = torch.unique(subject_idx, return_counts=True)
+        num_subjects = len(counts)
+        print('\U0001F64B'*2, f' number of subjects is: {num_subjects}')
+        grouped_image_list = []
+        for i in range(num_subjects):
+            selected_images = sampled_images[subject_idx == i]
+            if self.subset=='train':  # 取出一部分看看就行
+                grouped_image_list.append(selected_images[:n_partial_sampling]) 
+            else:
+                grouped_image_list.append(selected_images)
+            # selected_naive_labels = naive_label[subject_idx == i]
+
+            # sorted_naive_labels, indices= torch.sort(selected_naive_labels)
+            # sorted_images = selected_images[indices]
+            # sorted_images = torch.gather(selected_images,0,indices)
+
+            # unique_sorted_naive_labels, unique_indices = np.unique(sorted_naive_labels, return_index=True)
+            # xx = sorted_naive_labels[unique_indices] # 应该与unique_sorted_naive_label一致
+            # unique_sorted_images = sorted_images[unique_indices]
+            # grouped_image_list.append(unique_sorted_images)
+        grouped_images = torch.stack(grouped_image_list)  # (5,50,3,n+1,256,256)
+
+        return grouped_images
+
+        
+
+    
 ###########################################################################
 ###########################################################################
 
@@ -1397,7 +1650,7 @@ class PD_PLMSSampler(object):
         # sampling
         C, H, W = shape
         size = (batch_size, C, H, W)
-        print(f'Data shape for PLMS sampling is {size}')
+        # print(f'Data shape for PLMS sampling is {size}')
 
         samples, intermediates = self.plms_sampling(prompt, conditioning, size,
                                                     callback=callback,
@@ -1440,12 +1693,13 @@ class PD_PLMSSampler(object):
         intermediates = {'x_inter': [img], 'pred_x0': [img]}
         time_range = list(reversed(range(0,timesteps))) if ddim_use_original_steps else np.flip(timesteps)
         total_steps = timesteps if ddim_use_original_steps else timesteps.shape[0]
-        print(f"Running PLMS Sampling with {total_steps} timesteps")
+        # print(f"Running PLMS Sampling with {total_steps} timesteps")
 
-        iterator = tqdm(time_range, desc='PLMS Sampler', total=total_steps)
+        # iterator = tqdm(time_range, desc='PLMS Sampler', total=total_steps)
         old_eps = []
 
-        for i, step in enumerate(iterator):
+        # for i, step in enumerate(iterator):
+        for i, step in enumerate(time_range):
             index = total_steps - i - 1
             ts = torch.full((b,), step, device=device, dtype=torch.long)
             ts_next = torch.full((b,), time_range[min(i + 1, len(time_range) - 1)], device=device, dtype=torch.long)

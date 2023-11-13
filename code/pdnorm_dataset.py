@@ -238,15 +238,15 @@ class GOD_dataset(Dataset):
             img = self.image[index] / 255.0
         fmri = np.expand_dims(fmri, axis=0) # (1, num_voxels)
         if self.return_more_class_info:
-            img_class = self.img_class[index]
+            img_class = torch.tensor(self.img_class[index])
             img_class_name = self.img_class_name[index]
             naive_label = torch.tensor(self.naive_label[index])
             return {'fmri': self.fmri_transform(fmri), 'image': self.image_transform(img), 'subject': self.sub_idx[index],
-                    'image_class': img_class, 'image_class_name': img_class_name, 'naive_label':naive_label}
+                    'imagenet_1k_class': img_class, 'image_class_name': img_class_name, 'naive_label':naive_label}
         else:
             return {'fmri': self.fmri_transform(fmri), 'image': self.image_transform(img), 'subject': self.sub_idx[index]}
         
 
 
 if __name__ == '__main__':
-    train_set = GOD_dataset(subset='train')
+    train_set = GOD_dataset(subset='valid')

@@ -8,7 +8,7 @@ model:
     run_full_validation_threshold: 0.25
     eval_avg: true
     use_ema: false
-    learning_rate: 1.0e-5 # 1.0e-4 # 5.3e-5
+    learning_rate: 1.0e-4 # 1.0e-5 # 1.0e-4 # 5.3e-5
     ddim_steps: 250
     global_pool: false
     # original function params

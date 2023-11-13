@@ -19,27 +19,29 @@ valid_loader = DataLoader(valid_set, batch_size=50, num_workers=64, shuffle=Fals
 config = OmegaConf.load('./code/stageC_config.yaml')
 output_root = config.model.params.output_root  # '/data/xiaozhaoliu/stageC1'
 os.makedirs(output_root,exist_ok=True)
-wandb_logger = WandbLogger(project='mind-vis',
-                           group='stageC1',
+wandb_logger = WandbLogger(project='mind-vis',                           
+                           id='bjcgbjql',
                            log_model=False,
-                           save_dir=output_root)
+                           save_dir=output_root,
+                           resume=True
+                           )
 
 model = PDfLDM(**config.model.params)
-checkpoint_path = './results/generation/07-09-2023-01-50-29/checkpoint_best.pth'
-# checkpoint_path = './pretrains/ldm/label2img/model.ckpt'  
-# from the very first ckpt, the cond_stage_model should be loaded as well!
-model_meta = torch.load(checkpoint_path, map_location='cpu')
-model.state_from_fLDM(model_meta['model_state_dict'])
-unfreezed_params = model.unfreeze_stageC_params(True) # True-->28.2M; False-->26.2M
+# checkpoint_path = './results/generation/07-09-2023-01-50-29/checkpoint_best.pth'
+# checkpoint_path = './pretrains/ldm/label2img/model.ckpt'
+# model_meta = torch.load(checkpoint_path, map_location='cpu')
+# model.state_from_fLDM(model_meta['model_state_dict'])
+# unfreezed_params = model.unfreeze_stageC_params(True) # True-->28.2M; False-->26.2M
 
 
 
 trainer = PL.Trainer(accelerator='gpu',
                      devices=[3,4,5,6,7],
-                     strategy='ddp', 
+                     strategy='ddp',
+                     resume_from_checkpoint='/data/xiaozhaoliu/stageC1/mind-vis/bjcgbjql/checkpoints/epoch=699-step=56000.ckpt', 
                      logger=wandb_logger,
                      check_val_every_n_epoch=5,
-                     max_epochs=500,
+                     max_epochs=1000,
                      precision=32,
                      accumulate_grad_batches=1,
                      gradient_clip_val=0.5,

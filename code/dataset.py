@@ -267,7 +267,7 @@ def create_Kamitani_dataset(path='../data/Kamitani/npz',  roi='VC', patch_size=1
         test_img_label_all += test_lb
 
     len_max = max([i.shape[-1] for i in test_fmri])
-    test_fmri = [np.pad(i, ((0, 0),(0, len_max-i.shape[-1])), mode='wrap') for i in test_fmri]  # 不同sub可能 num_voxel不一样?
+    test_fmri = [np.pad(i, ((0, 0),(0, len_max-i.shape[-1])), mode='wrap') for i in test_fmri]  # 不同subnum_voxel不一样
     train_fmri = [np.pad(i, ((0, 0),(0, len_max-i.shape[-1])), mode='wrap') for i in train_fmri]
 
     # len_min = min([i.shape[-1] for i in test_fmri])
@@ -347,11 +347,11 @@ class Kamitani_dataset(Dataset):
             img_class = self.img_class[index]
             img_class_name = self.img_class_name[index]
             naive_label = torch.tensor(self.naive_label[index])
-            print(type(img))
+            # print(type(img))
             return {'fmri': self.fmri_transform(fmri), 'image': self.image_transform(img),
                     'image_class': img_class, 'image_class_name': img_class_name, 'naive_label':naive_label}
         else:
-            print(type(img))
+            # print(type(img))
             return {'fmri': self.fmri_transform(fmri), 'image': self.image_transform(img)}
 
 class base_dataset(Dataset):

@@ -117,8 +117,10 @@ def n_way_top_k_acc(pred, class_id, n_way, num_trials=40, top_k=1):
         idxs_picked = np.random.choice(pick_range, n_way-1, replace=False) # 不放回采样50-1个class_idx
         pred_picked = torch.cat([pred[class_id].unsqueeze(0), pred[idxs_picked]]) 
         # (50) 第一个元素是gt_out的概率, 剩余49个元素是随机选中的类别中模型预测的概率
+        # acc = accuracy(pred_picked.unsqueeze(0), torch.tensor([0], device=pred.device), 
+        #             top_k=top_k, task='multiclass')
         acc = accuracy(pred_picked.unsqueeze(0), torch.tensor([0], device=pred.device), 
-                    top_k=top_k)
+                       task='multiclass', num_classes=n_way, top_k=top_k)
         # 只要第0个元素在这50个元素里最大，则acc为1，否则为0
         acc_list.append(acc.item())
     return np.mean(acc_list), np.std(acc_list)

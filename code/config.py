@@ -54,21 +54,21 @@ class Config_MBM_finetune(Config_MBM_finetune):
         
         # Project setting
         self.root_path = '.'
-        self.output_path = self.root_path
+        self.output_root = '/data/xiaozhaoliu/stageA3'
         self.kam_path = os.path.join(self.root_path, 'data/Kamitani/npz')
         self.bold5000_path = os.path.join(self.root_path, 'data/BOLD5000')
         self.dataset = 'GOD' # GOD  or BOLD5000
         self.pretrain_mbm_path = os.path.join(self.root_path, f'pretrains/{self.dataset}/fmri_encoder.pth') 
 
         self.include_nonavg_test = True
-        self.kam_subs = ['sbj_3']
+        self.kam_subs = ['sbj_1','sbj_2','sbj_3','sbj_4','sbj_5']# ['sbj_3']
         self.bold5000_subs = ['CSI1']
 
         # Training Parameters
         self.lr = 5.3e-5
         self.weight_decay = 0.05
-        self.num_epoch = 15
-        self.batch_size = 16 if self.dataset == 'GOD' else 4 
+        self.num_epoch = 100
+        self.batch_size = 64 if self.dataset == 'GOD' else 4 
         self.mask_ratio = 0.75 
         self.accum_iter = 1
         self.clip_grad = 0.8
@@ -76,7 +76,7 @@ class Config_MBM_finetune(Config_MBM_finetune):
         self.min_lr = 0.
 
         # distributed training
-        self.local_rank = 0
+        self.local_rank = 2
         
 class Config_Generative_Model:
     def __init__(self):
