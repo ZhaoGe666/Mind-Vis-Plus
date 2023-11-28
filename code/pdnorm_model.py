@@ -63,11 +63,11 @@ class PDLayerNorm(PDNorm, nn.LayerNorm):
         # del self.weight
         # del self.bias
     def init_mlp(self):
-        # force the initial (scale,shift) to be (1,0) 
-        nn.init.zeros_(self.mlp_scale[0].weight)  #  0
-        nn.init.zeros_(self.mlp_scale[0].bias)  # 0
-        nn.init.zeros_(self.mlp_shift[0].weight)  # around 0
-        nn.init.zeros_(self.mlp_shift[0].bias)  # around 0
+        # force the initial (scale,shift) to be (0,0) 
+        nn.init.zeros_(self.mlp_scale[0].weight)
+        nn.init.zeros_(self.mlp_scale[0].bias) 
+        nn.init.zeros_(self.mlp_shift[0].weight)
+        nn.init.zeros_(self.mlp_shift[0].bias) 
 
     def forward(self, x: Tensor, prompt:Tensor) -> Tensor:
         # x:(B,291,1024)
@@ -77,11 +77,8 @@ class PDLayerNorm(PDNorm, nn.LayerNorm):
         x_standard = (x-mean)/torch.sqrt(var+self.eps)  # (B,291,1024)
         ############ 而 γ 和 β 是与normalized_shape同纬度，也就是跨其余维度share############
         scale = self.mlp_scale(prompt).unsqueeze(1)  #  (B,1,1024)
-        shift = self.mlp_shift(prompt).unsqueeze(1)  # same
-        out = x_standard * (1 + scale) + shift
-        # out = F.layer_norm(
-        #     x, self.normalized_shape, scale, shift, self.eps)        
-        return out
+        shift = self.mlp_shift(prompt).unsqueeze(1)  # same   
+        return x_standard * (1 + scale) + shift   
     
 class PDGroupNorm(PDNorm, nn.GroupNorm):
     def __init__(self, num_groups: int, num_channels: int, prompt_dim: int=16, eps: float = 0.00001, 
@@ -94,11 +91,11 @@ class PDGroupNorm(PDNorm, nn.GroupNorm):
         self.init_mlp()
 
     def init_mlp(self):
-        # force the initial (scale,shift) to be (1,0) 
-        nn.init.zeros_(self.mlp_scale[0].weight)  # # around 0
-        nn.init.ones_(self.mlp_scale[0].bias)  # around 1
-        nn.init.zeros_(self.mlp_shift[0].weight)  # around 0
-        nn.init.zeros_(self.mlp_shift[0].bias)  # around 0
+        # force the initial (scale,shift) to be (0,0) 
+        nn.init.zeros_(self.mlp_scale[0].weight) 
+        nn.init.zeros_(self.mlp_scale[0].bias) 
+        nn.init.zeros_(self.mlp_shift[0].weight) 
+        nn.init.zeros_(self.mlp_shift[0].bias) 
 
     def forward(self, x: Tensor, prompt:Tensor) -> Tensor:
         B, C, H, W = x.shape
