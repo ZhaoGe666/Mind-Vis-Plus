@@ -78,7 +78,7 @@ class PDLayerNorm(PDNorm, nn.LayerNorm):
         ############ 而 γ 和 β 是与normalized_shape同纬度，也就是跨其余维度share############
         scale = self.mlp_scale(prompt).unsqueeze(1)  #  (B,1,1024)
         shift = self.mlp_shift(prompt).unsqueeze(1)  # same
-        out = (x_standard + 1) * scale + shift
+        out = x_standard * (1 + scale) + shift
         # out = F.layer_norm(
         #     x, self.normalized_shape, scale, shift, self.eps)        
         return out
@@ -111,7 +111,7 @@ class PDGroupNorm(PDNorm, nn.GroupNorm):
         scale = self.mlp_scale(prompt).unsqueeze(-1).unsqueeze(-1)
         shift = self.mlp_shift(prompt).unsqueeze(-1).unsqueeze(-1)
 
-        return (x_standard + 1) * scale + shift
+        return x_standard * (1 + scale) + shift
 
 
 # class PDLayerNorm(PDNorm, nn.LayerNorm):
