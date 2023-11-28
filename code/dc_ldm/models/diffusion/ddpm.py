@@ -363,8 +363,8 @@ class DDPM(pl.LightningModule):
         # print('\U0001F601','self.trainer.current_epoch:', self.trainer.current_epoch)
         # print('\U0001F601','self.validation_count',self.validation_count)
         # print('\U0001F601','batch_idx', batch_idx)
-        self.train()  # 整个LatentDiffusion模型（作为子类），包括cond_stage_model
-        self.cond_stage_model.train()  # FIXME：重复了？
+        # self.train()  # 整个LatentDiffusion模型（作为子类），包括cond_stage_model
+        # self.cond_stage_model.train()  # FIXME：重复了？
             
         loss, loss_dict = self.shared_step(batch)
 
@@ -452,15 +452,15 @@ class DDPM(pl.LightningModule):
                                     f'{self.validation_count}_{suffix}', f'test{sp_idx}-{copy_idx}.png'))
                                     
     def full_validation(self, batch, random_state=None):
-        print('\U0001F92C','self.device', self.device)
-        print('\U0001F92C','batch[\'fmri\'].shape:', batch['fmri'].shape)
-        print('\U0001F92C','self.trainer.current_epoch:', self.trainer.current_epoch)
-        print('\U0001F92C','self.validation_count',self.validation_count)
+        # print('\U0001F92C','self.device', self.device)
+        # print('\U0001F92C','batch[\'fmri\'].shape:', batch['fmri'].shape)
+        # print('\U0001F92C','self.trainer.current_epoch:', self.trainer.current_epoch)
+        # print('\U0001F92C','self.validation_count',self.validation_count)
         # 仅仅是对当前GPU的
         print('###### run full validation! ######\n')
         grid, all_samples, random_state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=5, limit=None, state=random_state)
         metric, metric_list = self.get_eval_metric(all_samples)
-        self.save_images(all_samples, suffix='%.4f'%metric[-1])
+        # self.save_images(all_samples, suffix='%.4f'%metric[-1])
         metric_dict = {f'val/{k}_full':v for k, v in zip(metric_list, metric)}
         self.logger.log_metrics(metric_dict)  # FIXME: 记录steps的罪魁祸首！
         grid_imgs = Image.fromarray(grid.astype(np.uint8))
@@ -479,36 +479,38 @@ class DDPM(pl.LightningModule):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
-        print('\U0001F628','self.device', self.device)
-        print('\U0001F628','batch_idx', batch_idx,' -- (should always be 0)')
-        print('\U0001F628','batch[\'fmri\'].shape:', batch['fmri'].shape)
-        print('\U0001F628','self.trainer.current_epoch:', self.trainer.current_epoch)
-        print('\U0001F628','self.validation_count',self.validation_count)
+        # print('\U0001F628','self.device', self.device)
+        # print('\U0001F628','batch_idx', batch_idx,' -- (should always be 0)')
+        # print('\U0001F628','batch[\'fmri\'].shape:', batch['fmri'].shape)
+        # print('\U0001F628','self.trainer.current_epoch:', self.trainer.current_epoch)
+        # print('\U0001F628','self.validation_count',self.validation_count)
         
         if batch_idx != 0:  # 只有1个batch只可能为0
             return
         
-        if self.validation_count % 15 == 0 and self.trainer.current_epoch != 0:
+        if self.validation_count % 25 == 0 and self.trainer.current_epoch != 0 and self.global_rank==0:
             self.full_validation(batch)
         else:
             grid, all_samples, state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=3, limit=5)
             # all_samples: (B<limit,num_samples+1,3,256,256) 只算了5个以内的样本，每个样本采样3次生成图像
             metric, metric_list = self.get_eval_metric(all_samples, avg=self.eval_avg)
-            grid_imgs = Image.fromarray(grid.astype(np.uint8))
-            self.logger.log_image(key=f'samples_test', images=[grid_imgs])
             metric_dict = {f'val/{k}':v for k, v in zip(metric_list, metric)}
             self.logger.log_metrics(metric_dict)
-            ##############################
-            self.log('wtf/global_rankkkkkkkk', self.global_rank*1.)  # 2GPU的情况下，如果结果始终为0，则只GPU0的值，为0.5则跨gpu平均
-            if self.global_rank ==0:
-                self.log('wtf/xxx',233.)
-            elif self.global_rank == 1:
-                self.log('wtf/xxx',888.)
-            elif self.global_rank == 2:
-                self.log('wtf/xxx',0.6666)
-            ##############################
-            if metric[-1] > self.run_full_validation_threshold:
-                self.full_validation(batch, state)  # 'top-1-class (max)' 的acc>0.15时，对全部test样本生成
+            # ##############################
+            # self.log('wtf/global_rankkkkkkkk', self.global_rank*1.)  # 2GPU的情况下，如果结果始终为0，则只GPU0的值，为0.5则跨gpu平均
+            # if self.global_rank ==0:
+            #     self.log('wtf/xxx',233.)
+            # elif self.global_rank == 1:
+            #     self.log('wtf/xxx',888.)
+            # elif self.global_rank == 2:
+            #     self.log('wtf/xxx',0.6666)
+            # ### DDP下所有GPU上的指标会汇总###
+            # ##############################
+            if self.global_rank==0:
+                grid_imgs = Image.fromarray(grid.astype(np.uint8))
+                self.logger.log_image(key=f'samples_test', images=[grid_imgs])
+                if metric[-1] > self.run_full_validation_threshold:
+                    self.full_validation(batch, state)  # 'top-1-class (max)' 的acc>0.15时，对全部test样本生成
         self.validation_count += 1
 
     def get_eval_metric(self, samples, avg=True):
@@ -1052,7 +1054,7 @@ class LatentDiffusion(DDPM):
         return self.first_stage_model.encode(x)
 
     def shared_step(self, batch, **kwargs):
-        self.freeze_first_stage()
+        # self.freeze_first_stage()
         x, c = self.get_input(batch, self.first_stage_key)
         if self.return_cond:
             loss, cc = self(x, c)

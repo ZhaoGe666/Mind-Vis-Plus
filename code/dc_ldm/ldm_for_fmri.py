@@ -110,7 +110,7 @@ class fLDM:
         # # stage one: only optimize conditional encoders
         print('\n##### Stage One: only optimize conditional encoders #####')
         dataloader = DataLoader(dataset, batch_size=15, shuffle=True) 
-        test_loader = DataLoader(test_dataset, batch_size=10, shuffle=False)
+        test_loader = DataLoader(test_dataset, batch_size=50, shuffle=False)
         # 默认 first_stage （image）是 freeze 的，cond_stage （fmri）是 trainable 的
         self.model.unfreeze_whole_model()  # 设置LatentDiffusion所有的参数requires_grad=True
 
@@ -129,15 +129,15 @@ class fLDM:
         self.model.unfreeze_whole_model() # 何苦呢？
         
         # 这里保存最后一个epoch的dict? config内容也更多，
-        torch.save(
-            {
-                'model_state_dict': self.model.state_dict(),
-                'config': config,
-                'state': torch.random.get_rng_state()
+        # torch.save(
+        #     {
+        #         'model_state_dict': self.model.state_dict(),
+        #         'config': config,
+        #         'state': torch.random.get_rng_state()
 
-            },
-            os.path.join(output_path, 'checkpoint.pth')
-        )
+        #     },
+        #     os.path.join(output_path, 'checkpoint.pth')
+        # )
         
 
     @torch.no_grad()

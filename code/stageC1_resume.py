@@ -10,44 +10,41 @@ from pdnorm_dataset import GOD_dataset
 from omegaconf import OmegaConf
 
 
+def main():
+    train_set = GOD_dataset(subset='train')
+    valid_set = GOD_dataset(subset='valid')
+    train_loader = DataLoader(train_set, batch_size=15, num_workers=64, shuffle=True)
+    valid_loader = DataLoader(valid_set, batch_size=50, num_workers=64, shuffle=False)
 
-train_set = GOD_dataset(subset='train')
-valid_set = GOD_dataset(subset='valid')
-train_loader = DataLoader(train_set, batch_size=15, num_workers=64, shuffle=True)
-valid_loader = DataLoader(valid_set, batch_size=50, num_workers=64, shuffle=False)
+    config = OmegaConf.load('./code/stageC_config.yaml')
+    group_dir = config.model.params.output_root  # '/data/xiaozhaoliu/stageC1'
+    os.makedirs(group_dir,exist_ok=True)
+    
+    model = PDfLDM(**config.model.params)
 
-config = OmegaConf.load('./code/stageC_config.yaml')
-output_root = config.model.params.output_root  # '/data/xiaozhaoliu/stageC1'
-os.makedirs(output_root,exist_ok=True)
-wandb_logger = WandbLogger(project='mind-vis',                           
-                           id='bjcgbjql',
-                           log_model=False,
-                           save_dir=output_root,
-                           resume=True
-                           )
+    wandb_logger = WandbLogger(project='mind-vis',   
+                            group='stageC1',                        
+                            id='xhq7ymkr',
+                            resume=True,
+                            log_model=False,
+                            save_dir=group_dir,
+                            )
 
-model = PDfLDM(**config.model.params)
-# checkpoint_path = './results/generation/07-09-2023-01-50-29/checkpoint_best.pth'
-# checkpoint_path = './pretrains/ldm/label2img/model.ckpt'
-# model_meta = torch.load(checkpoint_path, map_location='cpu')
-# model.state_from_fLDM(model_meta['model_state_dict'])
-# unfreezed_params = model.unfreeze_stageC_params(True) # True-->28.2M; False-->26.2M
+    trainer = PL.Trainer(accelerator='gpu',
+                        devices=[3,4,5,6,7],
+                        strategy='ddp',
+                        resume_from_checkpoint='/data/xiaozhaoliu/stageC1/mind-vis/xhq7ymkr/checkpoints/epoch=1999-step=160000.ckpt', 
+                        logger=wandb_logger,
+                        check_val_every_n_epoch=5,
+                        max_epochs=2500,
+                        precision=32,
+                        accumulate_grad_batches=1,
+                        gradient_clip_val=0.5,
+                        enable_model_summary=False,
+                        enable_checkpointing=True
+                        )
 
+    trainer.fit(model, train_loader, valid_loader)
 
-
-trainer = PL.Trainer(accelerator='gpu',
-                     devices=[3,4,5,6,7],
-                     strategy='ddp',
-                     resume_from_checkpoint='/data/xiaozhaoliu/stageC1/mind-vis/bjcgbjql/checkpoints/epoch=699-step=56000.ckpt', 
-                     logger=wandb_logger,
-                     check_val_every_n_epoch=5,
-                     max_epochs=1000,
-                     precision=32,
-                     accumulate_grad_batches=1,
-                     gradient_clip_val=0.5,
-                     enable_model_summary=False,
-                     enable_checkpointing=True
-                    )
-
-trainer.fit(model, train_loader, valid_loader)
-
+if __name__ == '__main__':
+    main()

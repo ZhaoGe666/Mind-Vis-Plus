@@ -18,16 +18,7 @@ from dc_ldm.ldm_for_fmri import fLDM
 from eval_metrics import get_similarity_metric
 
 
-def wandb_init(config, output_path):
-    wandb.init( project='mind-vis',
-                group="stageB_dc-ldm",
-                anonymous="allow",
-                config=config,
-                reinit=False)
-    create_readme(config, output_path)
 
-def wandb_finish():
-    wandb.finish()
 
 def to_image(img):
     if img.shape[-1] != 3:
@@ -163,31 +154,28 @@ def main(config):
                 device=device, pretrain_root=config.pretrain_gm_path, logger=config.logger, 
                 ddim_steps=config.ddim_steps, global_pool=config.global_pool, use_time_cond=config.use_time_cond)
     
-    # resume training if applicable
-    if config.checkpoint_path is not None:
-        model_meta = torch.load(config.checkpoint_path, map_location='cpu')
-        generative_model.model.load_state_dict(model_meta['model_state_dict'])
-        print('model resumed')
-    # finetune the model
-    trainer = create_trainer(config.num_epoch, config.precision, config.accumulate_grad, logger, check_val_every_n_epoch=5)
-    generative_model.finetune(trainer, fmri_latents_dataset_train, fmri_latents_dataset_test,
-                config.batch_size, config.lr, config.output_path, config=config)
+    # resume training
+    checkpoint_path = '/home/xiaozhaoliu/Mind-Vis-Plus/results/generation/22-11-2023-09-07-28/checkpoint.pth'
+    model_meta = torch.load(checkpoint_path, map_location='cpu')
+    generative_model.model.load_state_dict(model_meta['model_state_dict'])
+    print('model resumed')
+
 
     # generate images
     # generate limited train images and generate images for subjects seperately
     # generate_images(generative_model, fmri_latents_dataset_train, fmri_latents_dataset_test, config)
-    # generate_images_for_each_subject(generative_model, fmri_latents_dataset_train, fmri_latents_dataset_test, config)
+    generate_images_for_each_subject(generative_model, fmri_latents_dataset_train, fmri_latents_dataset_test, config)
 
     return
 
 
 def generate_images_for_each_subject(generative_model, fmri_latents_dataset_train, fmri_latents_dataset_test, config):
     # train set
-    grid, _ = generative_model.generate(fmri_latents_dataset_train, config.num_samples, 
-                config.ddim_steps, config.HW, 10) # generate 10 instances
-    grid_imgs = Image.fromarray(grid.astype(np.uint8))
-    grid_imgs.save(os.path.join(config.output_path, 'samples_train.png'))  # 所有的生成的栅格排列图像
-    wandb.log({'summary/samples_train': wandb.Image(grid_imgs)})
+    # grid, _ = generative_model.generate(fmri_latents_dataset_train, config.num_samples, 
+    #             config.ddim_steps, config.HW, 10) # generate 10 instances
+    # grid_imgs = Image.fromarray(grid.astype(np.uint8))
+    # grid_imgs.save(os.path.join(config.output_path, 'samples_train.png'))  # 所有的生成的栅格排列图像
+    # wandb.log({'summary/samples_train': wandb.Image(grid_imgs)})
     # valid set
     _, samples = generative_model.generate(fmri_latents_dataset_test, config.num_samples, 
                 config.ddim_steps, config.HW)
@@ -203,7 +191,7 @@ def generate_images_for_each_subject(generative_model, fmri_latents_dataset_trai
         grid_PIL= Image.fromarray(grid_rgb.numpy())
         grid_images.append(grid_PIL)
 
-    wandb.log({f'summary/samples_valid':grid_images})
+    wandb.log({f'summary/samples_valid':[wandb.Image(image) for image in grid_images]})
 
 
     metric, metric_list = get_eval_metric(samples, avg=config.eval_avg)
@@ -260,12 +248,6 @@ def create_readme(config, path):
         print(config.__dict__, file=f)
 
 
-def create_trainer(num_epoch, precision=32, accumulate_grad_batches=2,logger=None,check_val_every_n_epoch=0):
-    devices = [3,4,5,6,7]  # FIXME: always check here before start!
-    return pl.Trainer(accelerator='gpu', strategy='ddp',max_epochs=num_epoch, logger=logger, 
-            precision=precision, accumulate_grad_batches=accumulate_grad_batches,
-            enable_checkpointing=True, enable_model_summary=False, gradient_clip_val=0.5,
-            check_val_every_n_epoch=check_val_every_n_epoch,devices=devices)
   
 if __name__ == '__main__':
     args = get_args_parser()
@@ -273,23 +255,19 @@ if __name__ == '__main__':
     config = Config_Generative_Model()
     config = update_config(args, config)
     
-    if config.checkpoint_path is not None:  # config里是空的
-        model_meta = torch.load(config.checkpoint_path, map_location='cpu')  # 包含
-        ckp = config.checkpoint_path
-        config = model_meta['config']
-        config.checkpoint_path = ckp  # 更新config中ckp为读取的ckp
-        print('Resuming from checkpoint: {}'.format(config.checkpoint_path))
-
-    output_path = os.path.join(config.root_path, 'results', 'generation',  '%s'%(datetime.datetime.now().strftime("%d-%m-%Y-%H-%M-%S")))
+    output_path = '/home/xiaozhaoliu/Mind-Vis-Plus/results/generation/22-11-2023-09-07-28'
     config.output_path = output_path
-    os.makedirs(output_path, exist_ok=True)
-    
-    wandb_init(config, output_path)
 
-    logger = WandbLogger()
+    wandb.init(project='mind-vis',
+                group="stageB_dc-ldm",
+                anonymous="allow",
+                config=config,
+                reinit=False,
+                resume=True,
+                id='yfzop89v'
+                )
+    # create_readme(config, output_path)
     # config.logger = logger
     config.logger = None # shit
-
-
     main(config)
-    wandb_finish()
+    wandb.finish()

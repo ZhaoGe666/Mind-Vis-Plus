@@ -7,6 +7,7 @@ import numpy as np
 from torch import Tensor
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Union
 
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torchmetrics.image import StructuralSimilarityIndexMeasure
@@ -15,9 +16,9 @@ from torchvision.models import ViT_L_16_Weights, vit_l_16
 
 from tqdm import tqdm
 from PIL import Image
-from datetime import datetime
 from einops import rearrange, repeat
-from pytz import timezone
+from abc import ABC, abstractmethod
+
 from torchvision.utils import make_grid
 from pytorch_lightning.utilities.distributed import rank_zero_only
 
@@ -29,16 +30,16 @@ from dc_ldm.modules.diffusionmodules.util import make_ddim_sampling_parameters, 
 from torch.nn.modules.normalization import _shape_t
 
 
-class PDNorm(nn.Module):
+class PDNorm(ABC):
     def __init__(self) -> None:
         super().__init__()
     
-    # @abstractmethod
+    @abstractmethod
     def init_mlp(self):
         # force the initial values of (scale,shift) to be ~(1,0) 
         pass
     
-    # @abstractmethod
+    @abstractmethod
     def forward(self, x, prompt):
         pass
 
@@ -63,9 +64,9 @@ class PDLayerNorm(PDNorm, nn.LayerNorm):
         # del self.bias
     def init_mlp(self):
         # force the initial (scale,shift) to be (1,0) 
-        nn.init.normal_(self.mlp_scale[0].weight,mean=0,std=0.001)  # # around 0
-        nn.init.ones_(self.mlp_scale[0].bias)  # around 1
-        nn.init.normal_(self.mlp_shift[0].weight,mean=0,std=0.001)  # around 0
+        nn.init.zeros_(self.mlp_scale[0].weight)  #  0
+        nn.init.zeros_(self.mlp_scale[0].bias)  # 0
+        nn.init.zeros_(self.mlp_shift[0].weight)  # around 0
         nn.init.zeros_(self.mlp_shift[0].bias)  # around 0
 
     def forward(self, x: Tensor, prompt:Tensor) -> Tensor:
@@ -77,40 +78,11 @@ class PDLayerNorm(PDNorm, nn.LayerNorm):
         ############ 而 γ 和 β 是与normalized_shape同纬度，也就是跨其余维度share############
         scale = self.mlp_scale(prompt).unsqueeze(1)  #  (B,1,1024)
         shift = self.mlp_shift(prompt).unsqueeze(1)  # same
-        out = x_standard * scale + shift
+        out = (x_standard + 1) * scale + shift
         # out = F.layer_norm(
         #     x, self.normalized_shape, scale, shift, self.eps)        
         return out
-
-# class PDGroupNorm(PDNorm, nn.GroupNorm):
     
-#     def __init__(self, num_groups: int, num_channels: int, prompt_dim: int=16, eps: float = 0.00001, 
-#                  affine: bool = False,  # False --> super.__init__中取消初始化self.weight和self.bias
-#                  device=None, dtype=None) -> None:
-#         nn.GroupNorm.__init__(self, num_groups, num_channels, eps, affine, device, dtype)
-        
-#         self.mlp_scale = nn.Sequential(nn.Linear(prompt_dim, num_channels), nn.SiLU())
-#         self.mlp_shift = nn.Sequential(nn.Linear(prompt_dim, num_channels), nn.SiLU())
-    
-#     def forward(self, x: Tensor, prompt:Tensor) -> Tensor:
-#         # 在C维，分组计算mean和var  
-#         B,C,H,W = x.shape
-#         x_i_standard = torch.empty(x.shape, device=x.device)
-#         for i in range(self.num_groups):
-#             x_i = x[:,int(i*(C/self.num_groups)):int((i+1)*(C/self.num_groups)),:,:] # (B,c/g,h,w) 
-#             mean = torch.mean(x_i, dim=1, keepdim=True)  
-#             var = torch.var(x_i, dim=1, keepdim=True, unbiased=False)  # (b,1,h,w)
-#             x_i_standard[:,int(i*(C/self.num_groups)):int((i+1)*(C/self.num_groups)),:,:] = \
-#                         (x_i-mean)/torch.sqrt(var+self.eps)  # (B,c/g,h,w)
-#         #####################
-#         # x_i_standard = x_i_standard.to(device)
-#         scale = self.mlp_scale(prompt).reshape((B,C,1,1))  
-#         shift = self.mlp_shift(prompt).reshape((B,C,1,1))  # (B,prompt_dim)-->(B,C)-->(B,C,1,1)
-#         out = x_i_standard * scale + shift
-#         # out = F.group_norm(
-#         #     x, self.num_groups, scale, shift, self.eps)        
-#         return out
-
 class PDGroupNorm(PDNorm, nn.GroupNorm):
     def __init__(self, num_groups: int, num_channels: int, prompt_dim: int=16, eps: float = 0.00001, 
                  affine: bool = False,  # False --> super.__init__中取消初始化self.weight和self.bias
@@ -123,9 +95,9 @@ class PDGroupNorm(PDNorm, nn.GroupNorm):
 
     def init_mlp(self):
         # force the initial (scale,shift) to be (1,0) 
-        nn.init.normal_(self.mlp_scale[0].weight,mean=0,std=0.001)  # # around 0
+        nn.init.zeros_(self.mlp_scale[0].weight)  # # around 0
         nn.init.ones_(self.mlp_scale[0].bias)  # around 1
-        nn.init.normal_(self.mlp_shift[0].weight,mean=0,std=0.001)  # around 0
+        nn.init.zeros_(self.mlp_shift[0].weight)  # around 0
         nn.init.zeros_(self.mlp_shift[0].bias)  # around 0
 
     def forward(self, x: Tensor, prompt:Tensor) -> Tensor:
@@ -139,7 +111,78 @@ class PDGroupNorm(PDNorm, nn.GroupNorm):
         scale = self.mlp_scale(prompt).unsqueeze(-1).unsqueeze(-1)
         shift = self.mlp_shift(prompt).unsqueeze(-1).unsqueeze(-1)
 
-        return x_standard * scale + shift
+        return (x_standard + 1) * scale + shift
+
+
+# class PDLayerNorm(PDNorm, nn.LayerNorm):
+#     '''
+#     当输入为(B,C,L),normalized_shape=(L)时, 与nn.LayerNorm的区别在于:
+#         scale和shift在样本内的C上共享,即与样本有关
+#         而weight和bias在batch内的C上共享
+#     '''
+#     def __init__(self, normalized_shape: _shape_t, prompt_dim: int=16, eps: float = 0.00001, 
+#                  elementwise_affine: bool = False,  # False --> super.__init__中取消初始化self.weight和self.bias
+#                  device=None, dtype=None) -> None:
+#         nn.LayerNorm.__init__(self, normalized_shape, eps, elementwise_affine, device, dtype)
+#         # 父类中会将self.normalized_shape包装成tuple
+#         if len(self.normalized_shape) != 1:
+#             raise NotImplementedError # TODO
+#         self.mlp_scale = nn.Sequential(nn.Linear(prompt_dim, self.normalized_shape[0]), nn.SiLU())
+#         self.mlp_shift = nn.Sequential(nn.Linear(prompt_dim, self.normalized_shape[0]), nn.SiLU())
+#         self.init_mlp()
+#         # del self.weight
+#         # del self.bias
+#     def init_mlp(self):
+#         # force the initial (scale,shift) to be (1,0) 
+#         nn.init.normal_(self.mlp_scale[0].weight,mean=0,std=0.001)  # # around 0
+#         nn.init.ones_(self.mlp_scale[0].bias)  # around 1
+#         nn.init.normal_(self.mlp_shift[0].weight,mean=0,std=0.001)  # around 0
+#         nn.init.zeros_(self.mlp_shift[0].bias)  # around 0
+
+#     def forward(self, x: Tensor, prompt:Tensor) -> Tensor:
+#         # x:(B,291,1024)
+#         ############ mean和var是normalized_shape计算，也就是跨其余维度分别计算############
+#         mean = torch.mean(x, -1, keepdim=True)  # (B,291,1)
+#         var = torch.var(x, -1, keepdim=True, unbiased=False)
+#         x_standard = (x-mean)/torch.sqrt(var+self.eps)  # (B,291,1024)
+#         ############ 而 γ 和 β 是与normalized_shape同纬度，也就是跨其余维度share############
+#         scale = self.mlp_scale(prompt).unsqueeze(1)  #  (B,1,1024)
+#         shift = self.mlp_shift(prompt).unsqueeze(1)  # same
+#         out = x_standard * scale + shift
+#         # out = F.layer_norm(
+#         #     x, self.normalized_shape, scale, shift, self.eps)        
+#         return out
+
+
+# class PDGroupNorm(PDNorm, nn.GroupNorm):
+#     def __init__(self, num_groups: int, num_channels: int, prompt_dim: int=16, eps: float = 0.00001, 
+#                  affine: bool = False,  # False --> super.__init__中取消初始化self.weight和self.bias
+#                  device=None, dtype=None) -> None:
+#         nn.GroupNorm.__init__(self, num_groups, num_channels, eps, affine, device, dtype)
+
+#         self.mlp_scale = nn.Sequential(nn.Linear(prompt_dim, num_channels), nn.SiLU())
+#         self.mlp_shift = nn.Sequential(nn.Linear(prompt_dim, num_channels), nn.SiLU())
+#         self.init_mlp()
+
+#     def init_mlp(self):
+#         # force the initial (scale,shift) to be (1,0) 
+#         nn.init.normal_(self.mlp_scale[0].weight,mean=0,std=0.001)  # # around 0
+#         nn.init.ones_(self.mlp_scale[0].bias)  # around 1
+#         nn.init.normal_(self.mlp_shift[0].weight,mean=0,std=0.001)  # around 0
+#         nn.init.zeros_(self.mlp_shift[0].bias)  # around 0
+
+#     def forward(self, x: Tensor, prompt:Tensor) -> Tensor:
+#         B, C, H, W = x.shape
+#         x_reshaped = x.reshape(B, self.num_groups, C//self.num_groups, H, W)  # Reshape for group operations
+#         mean = torch.mean(x_reshaped, dim=(2, 3, 4), keepdim=True)
+#         var = torch.var(x_reshaped, dim=(2, 3, 4), keepdim=True, unbiased=False)
+#         x_standard = (x_reshaped - mean) / torch.sqrt(var + self.eps)
+#         x_standard = x_standard.reshape(B, C, H, W)  # Reshape back
+        
+#         scale = self.mlp_scale(prompt).unsqueeze(-1).unsqueeze(-1)
+#         shift = self.mlp_shift(prompt).unsqueeze(-1).unsqueeze(-1)
+
+#         return x_standard * scale + shift
     
 
 
@@ -199,8 +242,8 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
         # self.main_config 不需要保存config
         # TODO：后续所有(有调整必要的)超参应该放入config文件管理，与checkpoint分开管理
         
-        self.output_path = output_root + '/' + \
-            datetime.utcnow().astimezone(timezone('Asia/Shanghai')).strftime("%y-%m-%d-%H-%M-%S")
+        # self.output_path = output_root + '/' + \
+        #     datetime.utcnow().astimezone(timezone('Asia/Shanghai')).strftime("%y-%m-%d-%H-%M-%S")
         self.run_full_validation_threshold = run_full_validation_threshold
         self.eval_avg = eval_avg
         self.learning_rate = learning_rate
@@ -523,35 +566,35 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
             print("### USING STD-RESCALING ###")
 
 
-    def save_images(self, all_samples, suffix=0):
-        if self.output_path is not None:
-            os.makedirs(os.path.join(self.output_path, 'val', f'{self.validation_count}_{suffix}'), exist_ok=True)
-            for sp_idx, imgs in enumerate(all_samples):
-                for copy_idx, img in enumerate(imgs[1:]):
-                    img = rearrange(img, 'c h w -> h w c')
-                    Image.fromarray(img).save(os.path.join(self.output_path, 'val', 
-                                    f'{self.validation_count}_{suffix}', f'test{sp_idx}-{copy_idx}.png'))
+    # def save_images(self, all_samples, suffix=0):
+    #     if self.output_path is not None:
+    #         os.makedirs(os.path.join(self.output_path, 'val', f'{self.validation_count}_{suffix}'), exist_ok=True)
+    #         for sp_idx, imgs in enumerate(all_samples):
+    #             for copy_idx, img in enumerate(imgs[1:]):
+    #                 img = rearrange(img, 'c h w -> h w c')
+    #                 Image.fromarray(img).save(os.path.join(self.output_path, 'val', 
+    #                                 f'{self.validation_count}_{suffix}', f'test{sp_idx}-{copy_idx}.png'))
                                     
-    def full_validation(self, batch, random_state=None):
-        print('###### run full validation! ######\n')
-        grid, all_samples, random_state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=5, limit=None, state=random_state)
-        metric, metric_list = self.get_eval_metric(all_samples)
-        # self.save_images(all_samples, suffix='%.4f'%metric[-1])
-        metric_dict = {f'val/{k}_full':v for k, v in zip(metric_list, metric)}
-        self.logger.log_metrics(metric_dict, step=self.trainer.current_epoch)  # FIXME: 记录steps的罪魁祸首！
-        grid_imgs = Image.fromarray(grid.astype(np.uint8))
-        self.logger.log_image(key=f'samples_test_full', images=[grid_imgs], step=self.trainer.current_epoch)
-        if metric[-1] > self.best_val:
-            self.best_val = metric[-1]
-            torch.save(
-                {
-                    'model_state_dict': self.state_dict(),
-                    # 'config': self.main_config,
-                    'state': random_state
+    # def full_validation(self, batch, random_state=None):
+    #     print('###### run full validation! ######\n')
+    #     grid, all_samples, random_state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=5, limit=None, state=random_state)
+    #     metric, metric_list = self.get_eval_metric(all_samples)
+    #     # self.save_images(all_samples, suffix='%.4f'%metric[-1])
+    #     metric_dict = {f'val/{k}_full':v for k, v in zip(metric_list, metric)}
+    #     self.logger.log_metrics(metric_dict, step=self.trainer.current_epoch)  # FIXME: 记录steps的罪魁祸首！
+    #     grid_imgs = Image.fromarray(grid.astype(np.uint8))
+    #     self.logger.log_image(key=f'samples_test_full', images=[grid_imgs], step=self.trainer.current_epoch)
+    #     if metric[-1] > self.best_val:
+    #         self.best_val = metric[-1]
+    #         torch.save(
+    #             {
+    #                 'model_state_dict': self.state_dict(),
+    #                 # 'config': self.main_config,
+    #                 'state': random_state
 
-                },
-                os.path.join(self.output_path, 'checkpoint_best.pth')
-            )
+    #             },
+    #             os.path.join(self.output_path, 'checkpoint_best.pth')
+    #         )
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
@@ -672,8 +715,8 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
         all_samples = []
         with model.ema_scope():
             for count, item in tqdm(enumerate(zip(batch['fmri'], batch['image'], batch['subject'])),
-                                    desc=f'Batch{batch_idx}',
-                                    total=batch['subject'].shape[0]):
+                                    desc=f'Generating images...Rank{self.global_rank}-Batch{batch_idx}',
+                                    total=limit):
                 # print('\U0001F92C'*40)  
                 # print('item0-->fmri.shape',item[0].shape)
                 # print('item1-->image.shape',item[1].shape)
@@ -712,7 +755,24 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
         return grid, all_samples, state
 
     @torch.no_grad()  # TODO
-    def generate_paralle(self, batch, batch_idx, num_samples, ddim_steps=250, HW=None, limit=None, state=None):
+    def generate_paralle(self, batch, batch_idx, ddim_steps=250, HW=None, state=None,
+                         num_samples=4, n_partial_batch: Union[int,None]=6,  n_paralle=3):
+        if n_partial_batch is not None:
+            assert n_partial_batch % n_paralle == 0, \
+                f'partial_batch ({n_partial_batch}) should be divided by n_paralle ({n_paralle})'
+            n_group = n_partial_batch / n_paralle
+            partial_fmri = batch['fmri'][:n_partial_batch]
+            partial_img = batch['image'][:n_partial_batch]  # (n_partial_batch, C, H, W)
+            partial_sub = batch['subject'][:n_partial_batch]
+        else: 
+            partial_fmri = batch['fmri']    
+            partial_img = batch['image']  # (B, C, H, W)
+            partial_sub = batch['subject']
+            n_group = partial_sub.shape[0] / n_paralle  # FIXME
+
+        assert num_samples * n_paralle <= 12, \
+                f'num_samples({num_samples}) * n_paralle({n_paralle}) cannot exceed 12'
+        
         if HW is None:
             shape = (self.channels, self.image_size, self.image_size)  # (3,64,64)
         else:
@@ -720,22 +780,20 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
             shape = (self.channels,
                     HW[0] // 2 ** (num_resolutions - 1), HW[1] // 2 ** (num_resolutions - 1))
 
-        model = self
-        sampler = PD_PLMSSampler(model)
-        model.eval()
-
         if torch.cuda.is_available():
             state = torch.cuda.get_rng_state() if state is None else state
             torch.cuda.set_rng_state(state)
         else:
             state = torch.get_rng_state() if state is None else state
             torch.set_rng_state(state)
-
+        
+        model = self
+        sampler = PD_PLMSSampler(model)
+        model.eval()
         all_samples = []
-        n = 5 # empirical_num_of_grouping_for_parallel_sampling = 3
-        batch_size = batch['fmri'].size(0)
-        assert batch_size%n == 0, \
-            f"The empirical num {n} n must be divided by the batch size {batch['fmri'].size(0)} in val!"
+        grouped_fmri = partial_fmri.reshape()  # TODO
+
+        n=1
         with model.ema_scope():
             grouped_fmri = [batch['fmri'][i:i + n] for i in range(0, batch['fmri'].size(0), n)]
             grouped_images = [batch['image'][i:i + n] for i in range(0, batch['image'].size(0), n)]

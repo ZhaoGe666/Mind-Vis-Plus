@@ -1,5 +1,8 @@
-
 import os
+from pytz import timezone
+from datetime import datetime
+from omegaconf import OmegaConf
+
 import torch
 import pytorch_lightning as PL
 from torch.utils.data import DataLoader
@@ -7,17 +10,20 @@ from pytorch_lightning.loggers import WandbLogger
 
 from pdnorm_model import PDfLDM
 from pdnorm_dataset import GOD_dataset
-from omegaconf import OmegaConf
+
 
 def main():
     train_set = GOD_dataset(subset='train')
     valid_set = GOD_dataset(subset='valid')
-    train_loader = DataLoader(train_set, batch_size=15, num_workers=64, shuffle=True)
-    valid_loader = DataLoader(valid_set, batch_size=50, num_workers=64, shuffle=False)
+    train_loader = DataLoader(train_set, batch_size=15, num_workers=32, shuffle=True)
+    valid_loader = DataLoader(valid_set, batch_size=50, num_workers=32, shuffle=False)
 
     config = OmegaConf.load('./code/stageC_config.yaml')
-    output_root = config.model.params.output_root  # '/data/xiaozhaoliu/stageC1'
-    os.makedirs(output_root,exist_ok=True)
+
+    group_dir = config.model.params.output_root  # '/data/xiaozhaoliu/stageC1'
+    os.makedirs(group_dir,exist_ok=True)
+
+    
 
     model = PDfLDM(**config.model.params)
     fmri_encoder_ckpt_path = '/data/xiaozhaoliu/stageA3/09-11-2023-08-45-22/checkpoints/MAEforFMRI_epoch99.ckpt'
@@ -33,8 +39,9 @@ def main():
     wandb_logger = WandbLogger(project='mind-vis',
                             group='stageC1',
                             log_model=False,
-                            save_dir=output_root)
-    
+                            save_dir=group_dir, # save logs to group_dir/wandb
+                            )  
+
     trainer = PL.Trainer(accelerator='gpu',
                         devices=[3,4,5,6,7],
                         strategy='ddp', 
@@ -45,12 +52,13 @@ def main():
                         accumulate_grad_batches=1,
                         gradient_clip_val=0.5,
                         enable_model_summary=False,
-                        enable_checkpointing=True
+                        enable_checkpointing=True,
+                        # weights_save_path=ckpt_save_dir,  # # save logs to group_dir/mind-vis?
                         )
 
     trainer.fit(model, train_loader, valid_loader)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
 

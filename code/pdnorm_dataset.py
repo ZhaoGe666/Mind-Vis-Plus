@@ -249,4 +249,4 @@ class GOD_dataset(Dataset):
 
 
 if __name__ == '__main__':
-    train_set = GOD_dataset(subset='valid')
+    train_set = GOD_dataset(subset='train')

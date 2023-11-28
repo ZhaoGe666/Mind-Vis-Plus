@@ -4,11 +4,11 @@ model:
   params:
     # rewrite from (class) fLDM and config.py
     # output_root: ./results/stageC1
-    output_root: /data/xiaozhaoliu/stageC1
+    output_root: /home/xiaozhaoliu/Mind-Vis-Plus/results/stageC1 # /data/xiaozhaoliu/stageC1
     run_full_validation_threshold: 0.25
     eval_avg: true
     use_ema: false
-    learning_rate: 1.0e-4 # 1.0e-5 # 1.0e-4 # 5.3e-5
+    learning_rate: 5.3e-5 # 1.0e-5 # 1.0e-4 # 5.3e-5
     ddim_steps: 250
     global_pool: false
     # original function params

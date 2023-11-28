@@ -94,17 +94,18 @@ class Config_Generative_Model:
         # self.pretrain_gm_path = os.path.join(self.root_path, 'pretrains/ldm/layout2img')
         
         self.dataset = 'GOD' # GOD or BOLD5000
-        self.kam_subs = ['sbj_3']
+        self.kam_subs = ['sbj_1','sbj_2','sbj_3','sbj_4','sbj_5']
         self.bold5000_subs = ['CSI1']
-        self.pretrain_mbm_path = os.path.join(self.root_path, f'pretrains/{self.dataset}/fmri_encoder.pth') 
+        # self.pretrain_mbm_path = os.path.join(self.root_path, f'pretrains/{self.dataset}/fmri_encoder.pth') 
+        self.pretrain_mbm_path = '/data/xiaozhaoliu/stageA3/09-11-2023-08-45-22/checkpoints/MAEforFMRI_epoch99.ckpt'
 
         self.img_size = 256
 
         np.random.seed(self.seed)
         # finetune parameters
-        self.batch_size = 5 if self.dataset == 'GOD' else 25
+        self.batch_size = 15 if self.dataset == 'GOD' else 25
         self.lr = 5.3e-5
-        self.num_epoch = 500
+        self.num_epoch = 1000
         
         self.precision = 32
         self.accumulate_grad = 1
@@ -114,7 +115,7 @@ class Config_Generative_Model:
         self.eval_avg = True
 
         # diffusion sampling parameters
-        self.num_samples = 5
+        self.num_samples = 3
         self.ddim_steps = 250
         self.HW = None
         # resume check util
