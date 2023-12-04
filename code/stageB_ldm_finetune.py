@@ -261,7 +261,7 @@ def create_readme(config, path):
 
 
 def create_trainer(num_epoch, precision=32, accumulate_grad_batches=2,logger=None,check_val_every_n_epoch=0):
-    devices = [3,4,5,6,7]  # FIXME: always check here before start!
+    devices = [2] # [3,4,5,6,7]  # FIXME: always check here before start!
     return pl.Trainer(accelerator='gpu', strategy='ddp',max_epochs=num_epoch, logger=logger, 
             precision=precision, accumulate_grad_batches=accumulate_grad_batches,
             enable_checkpointing=True, enable_model_summary=False, gradient_clip_val=0.5,

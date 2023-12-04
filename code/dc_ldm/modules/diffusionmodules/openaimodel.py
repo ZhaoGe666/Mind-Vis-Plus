@@ -269,7 +269,7 @@ class ResBlock(TimestepBlock):
         if self.use_scale_shift_norm:
             out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
             scale, shift = th.chunk(emb_out, 2, dim=1)
-            h = out_norm(h) * (1 + scale) + shift
+            h = out_norm(h) *  + shift
             h = out_rest(h)
         else:
             h = h + emb_out

@@ -45,26 +45,26 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
 # --------------------------------------------------------
 def interpolate_pos_embed(model, checkpoint_model):
     if 'pos_embed' in checkpoint_model:
-        pos_embed_checkpoint = checkpoint_model['pos_embed']
-        embedding_size = pos_embed_checkpoint.shape[-1]
-        num_patches = model.patch_embed.num_patches
-        num_extra_tokens = model.pos_embed.shape[-2] - num_patches # cls token
+        pos_embed_checkpoint = checkpoint_model['pos_embed']  # (1,263,1024)
+        embedding_size = pos_embed_checkpoint.shape[-1]  # 1024
+        num_patches = model.patch_embed.num_patches  # 291
+        num_extra_tokens = model.pos_embed.shape[-2] - num_patches # cls token  292-291= 1
         # height (== width) for the checkpoint position embedding
-        orig_size = int(pos_embed_checkpoint.shape[-2] - num_extra_tokens)
+        orig_size = int(pos_embed_checkpoint.shape[-2] - num_extra_tokens)  # 263-1=262
         # height (== width) for the new position embedding
-        new_size = int(num_patches)
+        new_size = int(num_patches)  # 291
         # class_token and dist_token are kept unchanged
         if orig_size != new_size:
             print("Position interpolate from %d to %d" % (orig_size, new_size))
-            extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]
+            extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]  # (1,1,1024)
             # only the position tokens are interpolated
-            pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]
-            pos_tokens = pos_tokens.reshape(-1, orig_size, embedding_size).permute(0, 2, 1)
+            pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]  # (1,262,1024)
+            pos_tokens = pos_tokens.reshape(-1, orig_size, embedding_size).permute(0, 2, 1)  # (1,1024,262)
             pos_tokens = torch.nn.functional.interpolate(
-                pos_tokens, size=(new_size))
-            pos_tokens = pos_tokens.permute(0, 2, 1)
-            new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
-            checkpoint_model['pos_embed'] = new_pos_embed
+                pos_tokens, size=(new_size))    # (1,1024,291)
+            pos_tokens = pos_tokens.permute(0, 2, 1)    # (1,291,1024)
+            new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)  # cat the cls_token (all 0)
+            checkpoint_model['pos_embed'] = new_pos_embed   # (1,292,1024)
 
 
 

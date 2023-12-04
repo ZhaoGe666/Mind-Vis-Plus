@@ -18,7 +18,7 @@ def create_model_from_config(config, num_voxels, global_pool):
     return model
 
 class cond_stage_model(nn.Module):
-    def __init__(self, metafile, num_voxels, cond_dim=1280, global_pool=True):
+    def __init__(self, metafile, num_voxels=4656, cond_dim=512, global_pool=True):
         super().__init__()
         # prepare pretrained fmri mae 
         model = create_model_from_config(metafile['config'], num_voxels, global_pool)  # 初始化一个fmri_encoder对象

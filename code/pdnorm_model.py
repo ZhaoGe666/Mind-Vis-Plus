@@ -36,7 +36,7 @@ class PDNorm(ABC):
     
     @abstractmethod
     def init_mlp(self):
-        # force the initial values of (scale,shift) to be ~(1,0) 
+        # force the initial values of (scale,shift) to be ~(0,0) 
         pass
     
     @abstractmethod
@@ -45,70 +45,93 @@ class PDNorm(ABC):
 
 
 class PDLayerNorm(PDNorm, nn.LayerNorm):
-    '''
-    当输入为(B,C,L),normalized_shape=(L)时, 与nn.LayerNorm的区别在于:
-        scale和shift在样本内的C上共享,即与样本有关
-        而weight和bias在batch内的C上共享
-    '''
+
     def __init__(self, normalized_shape: _shape_t, prompt_dim: int=16, eps: float = 0.00001, 
-                 elementwise_affine: bool = False,  # False --> super.__init__中取消初始化self.weight和self.bias
+                 elementwise_affine: bool = True,  # False --> 取消初始化self.weight和self.bias
                  device=None, dtype=None) -> None:
         nn.LayerNorm.__init__(self, normalized_shape, eps, elementwise_affine, device, dtype)
         # 父类中会将self.normalized_shape包装成tuple
         if len(self.normalized_shape) != 1:
             raise NotImplementedError # TODO
-        self.mlp_scale = nn.Sequential(nn.Linear(prompt_dim, self.normalized_shape[0]), nn.SiLU())
-        self.mlp_shift = nn.Sequential(nn.Linear(prompt_dim, self.normalized_shape[0]), nn.SiLU())
+        self.mlp_scale = nn.Sequential(nn.SiLU(), nn.Linear(prompt_dim, self.normalized_shape[0]))
+        self.mlp_shift = nn.Sequential(nn.SiLU(), nn.Linear(prompt_dim, self.normalized_shape[0]))
         self.init_mlp()
-        # del self.weight
-        # del self.bias
+
     def init_mlp(self):
         # force the initial (scale,shift) to be (0,0) 
-        nn.init.zeros_(self.mlp_scale[0].weight)
-        nn.init.zeros_(self.mlp_scale[0].bias) 
-        nn.init.zeros_(self.mlp_shift[0].weight)
-        nn.init.zeros_(self.mlp_shift[0].bias) 
+        nn.init.zeros_(self.mlp_scale[-1].weight)
+        nn.init.zeros_(self.mlp_scale[-1].bias) 
+        nn.init.zeros_(self.mlp_shift[-1].weight)
+        nn.init.zeros_(self.mlp_shift[-1].bias) 
 
     def forward(self, x: Tensor, prompt:Tensor) -> Tensor:
         # x:(B,291,1024)
-        ############ mean和var是normalized_shape计算，也就是跨其余维度分别计算############
-        mean = torch.mean(x, -1, keepdim=True)  # (B,291,1)
-        var = torch.var(x, -1, keepdim=True, unbiased=False)
-        x_standard = (x-mean)/torch.sqrt(var+self.eps)  # (B,291,1024)
-        ############ 而 γ 和 β 是与normalized_shape同纬度，也就是跨其余维度share############
+        x_standard = F.layer_norm(
+            x, self.normalized_shape, self.weight, self.bias, self.eps)
         scale = self.mlp_scale(prompt).unsqueeze(1)  #  (B,1,1024)
-        shift = self.mlp_shift(prompt).unsqueeze(1)  # same   
-        return x_standard * (1 + scale) + shift   
-    
+        shift = self.mlp_shift(prompt).unsqueeze(1)  # same  
+        out = x_standard * (1 + scale) + shift 
+        # return x_standard
+        return out   
+
+
 class PDGroupNorm(PDNorm, nn.GroupNorm):
     def __init__(self, num_groups: int, num_channels: int, prompt_dim: int=16, eps: float = 0.00001, 
-                 affine: bool = False,  # False --> super.__init__中取消初始化self.weight和self.bias
+                 affine: bool = True,  # False --> super.__init__中取消初始化self.weight和self.bias
                  device=None, dtype=None) -> None:
         nn.GroupNorm.__init__(self, num_groups, num_channels, eps, affine, device, dtype)
 
-        self.mlp_scale = nn.Sequential(nn.Linear(prompt_dim, num_channels), nn.SiLU())
-        self.mlp_shift = nn.Sequential(nn.Linear(prompt_dim, num_channels), nn.SiLU())
+        self.mlp_scale = nn.Sequential(nn.SiLU(), nn.Linear(prompt_dim, num_channels))
+        self.mlp_shift = nn.Sequential(nn.SiLU(), nn.Linear(prompt_dim, num_channels))
         self.init_mlp()
 
     def init_mlp(self):
         # force the initial (scale,shift) to be (0,0) 
-        nn.init.zeros_(self.mlp_scale[0].weight) 
-        nn.init.zeros_(self.mlp_scale[0].bias) 
-        nn.init.zeros_(self.mlp_shift[0].weight) 
-        nn.init.zeros_(self.mlp_shift[0].bias) 
+        nn.init.zeros_(self.mlp_scale[-1].weight) 
+        nn.init.zeros_(self.mlp_scale[-1].bias) 
+        nn.init.zeros_(self.mlp_shift[-1].weight) 
+        nn.init.zeros_(self.mlp_shift[-1].bias) 
 
     def forward(self, x: Tensor, prompt:Tensor) -> Tensor:
-        B, C, H, W = x.shape
-        x_reshaped = x.reshape(B, self.num_groups, C//self.num_groups, H, W)  # Reshape for group operations
-        mean = torch.mean(x_reshaped, dim=(2, 3, 4), keepdim=True)
-        var = torch.var(x_reshaped, dim=(2, 3, 4), keepdim=True, unbiased=False)
-        x_standard = (x_reshaped - mean) / torch.sqrt(var + self.eps)
-        x_standard = x_standard.reshape(B, C, H, W)  # Reshape back
-        
+        # (b,c,h,w)
+        x_standard = F.group_norm(
+            x, self.num_groups, self.weight, self.bias, self.eps)
         scale = self.mlp_scale(prompt).unsqueeze(-1).unsqueeze(-1)
         shift = self.mlp_shift(prompt).unsqueeze(-1).unsqueeze(-1)
+        out = x_standard * (1 + scale) + shift
+        # return x_standard
+        return out
 
-        return x_standard * (1 + scale) + shift
+
+# class PDGroupNorm(PDNorm, nn.GroupNorm):
+#     def __init__(self, num_groups: int, num_channels: int, prompt_dim: int=16, eps: float = 0.00001, 
+#                  affine: bool = False,  # False --> super.__init__中取消初始化self.weight和self.bias
+#                  device=None, dtype=None) -> None:
+#         nn.GroupNorm.__init__(self, num_groups, num_channels, eps, affine, device, dtype)
+
+#         self.mlp_scale = nn.Sequential(nn.Linear(prompt_dim, num_channels), nn.SiLU())
+#         self.mlp_shift = nn.Sequential(nn.Linear(prompt_dim, num_channels), nn.SiLU())
+#         self.init_mlp()
+
+#     def init_mlp(self):
+#         # force the initial (scale,shift) to be (0,0) 
+#         nn.init.zeros_(self.mlp_scale[0].weight) 
+#         nn.init.zeros_(self.mlp_scale[0].bias) 
+#         nn.init.zeros_(self.mlp_shift[0].weight) 
+#         nn.init.zeros_(self.mlp_shift[0].bias) 
+
+#     def forward(self, x: Tensor, prompt:Tensor) -> Tensor:
+#         B, C, H, W = x.shape
+#         x_reshaped = x.reshape(B, self.num_groups, C//self.num_groups, H, W)  # Reshape for group operations
+#         mean = torch.mean(x_reshaped, dim=(2, 3, 4), keepdim=True)
+#         var = torch.var(x_reshaped, dim=(2, 3, 4), keepdim=True, unbiased=False)
+#         x_standard = (x_reshaped - mean) / torch.sqrt(var + self.eps)
+#         x_standard = x_standard.reshape(B, C, H, W)  # Reshape back
+        
+#         scale = self.mlp_scale(prompt).unsqueeze(-1).unsqueeze(-1)
+#         shift = self.mlp_shift(prompt).unsqueeze(-1).unsqueeze(-1)
+
+#         return x_standard * (1 + scale) + shift
 
 
 # class PDLayerNorm(PDNorm, nn.LayerNorm):
@@ -190,7 +213,6 @@ class PDGroupNorm(PDNorm, nn.GroupNorm):
 class PDfLDM(LatentDiffusion):  # 200 Norm instances in
     
     
-    # TODO:将fLDM的方法如finetune和generate直接并入, 包括 __init__!!!
     def __init__(self, first_stage_config, cond_stage_config, 
                  output_root, run_full_validation_threshold, eval_avg, learning_rate, global_pool,
                  image_size, channels,
@@ -287,13 +309,27 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
 
 
     def state_from_fmri_encoder(self, original_state_dict): 
-        del original_state_dict['mask_token']
-        del original_state_dict['pos_embed']
-        del original_state_dict['decoder_pos_embed']
+        del original_state_dict['mask_token']  # (1,1,512)
+        del original_state_dict['decoder_pos_embed']  # (1,263,512)
+        # del original_state_dict['pos_embed']  # (1,263,1024)
+        original_pos_embed = original_state_dict['pos_embed']
+        S_original = original_pos_embed.shape[-2]  # (1,263,1024)
+        num_patches = self.cond_stage_model.mae.patch_embed.num_patches  # 291
+        assert self.cond_stage_model.mae.pos_embed.shape[-2] == num_patches + 1  # 292
+        if S_original != num_patches + 1:
+            print(f'Interpolate the positional embedding sequence from {S_original} to {num_patches + 1}')
+            cls_token = original_pos_embed[:, :1, :]  # (1,1,1024)
+            pos_tokens = original_pos_embed[:, 1:,:]  # (1,262,1024)
+            pos_tokens = pos_tokens.permute(0, 2, 1)  # (1,1024,262)
+            pos_tokens = torch.nn.functional.interpolate(pos_tokens, size=(num_patches))    # (1,1024,291)
+            pos_tokens = pos_tokens.permute(0, 2, 1)    # (1,291,1024)
+            new_pos_embed = torch.cat((cls_token, pos_tokens), dim=1)  # cat the cls_token (all 0)
+            original_state_dict['pos_embed'] = new_pos_embed
+ 
         missing_keys, unexpected_keys = self.cond_stage_model.mae.load_state_dict(original_state_dict, strict=False)
         # print('Missing Keys:')
-        for uk in unexpected_keys: 
-            assert 'decoder' in uk or 'norm' in uk, f'\U0001F605 unexpected param: {uk} '
+        for uk in unexpected_keys: # []
+            assert 'decoder' in uk or 'norm' in uk, f'\U0001F605 unexpected param: {uk} ' # FIXME
         print('\U0001F605'*2+' State dict of fmri encoder (from stage A) is successfully loaded! '+'\U0001F605'*2)
 
     def state_from_LDM(self, original_state_dict): 
@@ -1596,7 +1632,7 @@ class PDMAEforFMRI(MAEforFMRI):  #  49 norm instances in CLASS fmri_encoder ! no
             for i in range(depth)])  #  2*24 instances of norm here!!
         
         self.norm = norm_layer(embed_dim, prompt_dim)  #  1 instance here!
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))  # FIXME
         # --------------------------------------------------------------------------
         self.num_patches = self.patch_embed.num_patches
         self.global_pool = global_pool

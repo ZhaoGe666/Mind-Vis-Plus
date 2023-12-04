@@ -4,10 +4,12 @@ import torch
 import pytorch_lightning as PL
 from torch.utils.data import DataLoader
 from pytorch_lightning.loggers import WandbLogger
+from omegaconf import OmegaConf
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 from pdnorm_model import PDfLDM
 from pdnorm_dataset import GOD_dataset
-from omegaconf import OmegaConf
+
 
 
 def main():
@@ -24,25 +26,31 @@ def main():
 
     wandb_logger = WandbLogger(project='mind-vis',   
                             group='stageC1',                        
-                            id='xhq7ymkr',
+                            id='zkmfgrfo',
                             resume=True,
                             log_model=False,
                             save_dir=group_dir,
                             )
+    
+    checkpoint_callback = ModelCheckpoint(save_top_k=3, 
+                                          monitor='val/top-1-class',
+                                          mode='max')
 
     trainer = PL.Trainer(accelerator='gpu',
                         devices=[3,4,5,6,7],
                         strategy='ddp',
-                        resume_from_checkpoint='/data/xiaozhaoliu/stageC1/mind-vis/xhq7ymkr/checkpoints/epoch=1999-step=160000.ckpt', 
+                        resume_from_checkpoint='/home/xiaozhaoliu/Mind-Vis-Plus/results/stageC1/mind-vis/zkmfgrfo/checkpoints/epoch=499-step=40000.ckpt', 
                         logger=wandb_logger,
                         check_val_every_n_epoch=5,
-                        max_epochs=2500,
+                        max_epochs=1000,
                         precision=32,
                         accumulate_grad_batches=1,
                         gradient_clip_val=0.5,
                         enable_model_summary=False,
-                        enable_checkpointing=True
+                        enable_checkpointing=True,
+                        callbacks=[checkpoint_callback]
                         )
+
 
     trainer.fit(model, train_loader, valid_loader)
 
