@@ -176,7 +176,11 @@ python code/gen_eval.py --dataset GOD
 
 ## Acknowledgement
 We thank [Kamitani Lab](https://github.com/KamitaniLab), [
-Weizmann Vision Lab](https://github.com/WeizmannVision) and [BOLD5000 team](https://bold5000-dataset.github.io/website/) for making their raw and pre-processed data public. Our Masked Brain Modeling implementation is based on the [Masked Autoencoders](https://github.com/facebookresearch/mae) by Facebook Research. Our Conditional Latent Diffusion Model implementation is based on the [Latent Diffusion Model](https://github.com/CompVis/latent-diffusion) implementation from CompVis. We thank these authors for making their codes and checkpoints publicly available!
+Weizmann Vision Lab](https://github.com/WeizmannVision) and [BOLD5000 team](https://bold5000-dataset.github.io/website/) for making their raw and pre-processed data public. Our Masked Brain Modeling implementation is based on the [Masked Autoencoders](https://github.com/facebookresearch/mae) by Facebook Research. Our Conditional Latent Diffusion Model implementation is based on the [Latent Diffusion Model](https://github.com/CompVis/latent-diffusion) implementation from CompVis. We thank these authors for making their codes and checkpoints publicly available!  
+$$
+\Delta W = AB^T, \text{ where } A \in \mathbb{R}^{n \times d}, B \in \mathbb{R}^{m \times d}, d \ll n
+$$
+
 
 ## Citation
 ```

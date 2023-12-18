@@ -13,7 +13,7 @@ def main():
     # device = torch.device('cuda:7')
     config = OmegaConf.load('./code/stageC_config.yaml')
     model = PDfLDM(**config.model.params)
-    checkpoint_path = '/data/xiaozhaoliu/stageC1/mind-vis/xhq7ymkr/checkpoints/epoch=2499-step=200000.ckpt'
+    checkpoint_path = './results/stageC1/mind-vis/ihwhs3ps/checkpoints/epoch=829-step=13280.ckpt'  # FIXME watch out !!
     # checkpoint_path = './pretrains/ldm/label2img/model.ckpt'  
     # from the very first ckpt, the cond_stage_model should be loaded as well!
     model_meta = torch.load(checkpoint_path, map_location='cpu')
@@ -23,17 +23,18 @@ def main():
     output_root = config.model.params.output_root  # '/data/xiaozhaoliu/stageC1'
     os.makedirs(output_root,exist_ok=True)
     wandb_logger = WandbLogger(project='mind-vis',
-                            id='xhq7ymkr',  # FIXME watch out !!
+                            id='ihwhs3ps',  # FIXME watch out !!
                             group='stageC1',
                             log_model=False,
                             save_dir=output_root,
-                            prefix='test_step_2500epoch',
+                            prefix='test_best_829epoch',  # FIXME watch out !!
                             resume=True
                             )
 
     trainer = PL.Trainer(accelerator='gpu',
-                        devices=[2],
+                        devices=[1],  # FIXME watch out !!
                         logger=wandb_logger,
+                        max_epochs=1,
                         enable_progress_bar=True)
 
     valid_set = GOD_dataset(subset='valid', return_more_class_info=True)

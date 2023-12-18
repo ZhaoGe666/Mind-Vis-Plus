@@ -307,8 +307,7 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
             assert 'mlp_' in mk or 'decoder' in mk or 'embed_subject' in mk, f'\U0001F60E missing param: {mk}'
         print('\U0001F60E'*2 + f' {self.__class__.__name__}: State dict of fLDM (from stageB) successfully loaded! '+'\U0001F60E'*2)
 
-
-    def state_from_fmri_encoder(self, original_state_dict): 
+    def state_from_mae(self, original_state_dict): 
         del original_state_dict['mask_token']  # (1,1,512)
         del original_state_dict['decoder_pos_embed']  # (1,263,512)
         # del original_state_dict['pos_embed']  # (1,263,1024)
@@ -330,6 +329,30 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
         # print('Missing Keys:')
         for uk in unexpected_keys: # []
             assert 'decoder' in uk or 'norm' in uk, f'\U0001F605 unexpected param: {uk} ' # FIXME
+        print('\U0001F605'*2+' State dict of mae (from provided ckpt or stageA2-trained) is successfully loaded! '+'\U0001F605'*2)
+    
+    def state_from_fmri_encoder(self, original_state_dict): 
+        del original_state_dict['mask_token']  # (1,1,512)
+        del original_state_dict['decoder_pos_embed']  # (1,263,1024)
+        original_pos_embed = original_state_dict['pos_embed']
+        S_original = original_pos_embed.shape[-2]  # (1,263,1024)
+        num_patches = self.cond_stage_model.mae.patch_embed.num_patches  # 291
+        assert self.cond_stage_model.mae.pos_embed.shape[-2] == num_patches + 1  # 292
+        if S_original != num_patches + 1:
+            print(f'Interpolate the positional embedding sequence from {S_original} to {num_patches + 1}')
+            cls_token = original_pos_embed[:, :1, :]  # (1,1,1024)
+            pos_tokens = original_pos_embed[:, 1:,:]  # (1,262,1024)
+            pos_tokens = pos_tokens.permute(0, 2, 1)  # (1,1024,262)
+            pos_tokens = torch.nn.functional.interpolate(pos_tokens, size=(num_patches))    # (1,1024,291)
+            pos_tokens = pos_tokens.permute(0, 2, 1)    # (1,291,1024)
+            new_pos_embed = torch.cat((cls_token, pos_tokens), dim=1)  # cat the cls_token (all 0)
+            original_state_dict['pos_embed'] = new_pos_embed
+ 
+        missing_keys, unexpected_keys = self.cond_stage_model.mae.load_state_dict(original_state_dict, strict=False)
+        # print('Missing Keys:')
+        for mk in missing_keys: # []
+            assert 'decoder' in mk or 'norm' in mk or 'mask' in mk, \
+                                            f'\U0001F605 unexpected param: {mk} ' # FIXME
         print('\U0001F605'*2+' State dict of fmri encoder (from stage A) is successfully loaded! '+'\U0001F605'*2)
 
     def state_from_LDM(self, original_state_dict): 
@@ -343,25 +366,32 @@ class PDfLDM(LatentDiffusion):  # 200 Norm instances in
         print('\U0001F60F'*2+' State dict of LDM is successfully loaded! '+'\U0001F60F'*2)
     
     def unfreeze_stageC_params(self):
-        # unfreeze the 
+        # cond_params = list(self.cond_stage_model.parameters())  # 502 个参数，包含49个norm
+        # unet_cond_params = [p for n, p in self.model.named_parameters() 
+        #             if 'time_embed_condtion' in n or 'attn2' in n]   # Unet 150/ self 300
+        # # 'time_embed_condtion'  () UNetModel.Sequential(conv_[, linear])
+        # # 'attn2'                () UNetModel.SpatialTransformer.BasicTransformerBlocker.CrossAttention
+        # # 'norm2'                () UNetModel.SpatialTransformer.BasicTransformerBlocker.Layernorm
+        #     # 除了以上两部分参数包含的pdnorm，将外部的pdnorm也放开训练
+        #     # 已知cond_stage_model.mae.decoder_blocks和first_stage_model中没有pdnorm，因此额外的pdnorm只存在于unet
+        #     # num_instances_pdnorm: 158 = 49(cond_stage_model) + 109(unet_model)
+        # unet_pdnorm_params = []
+        # for name, module in self.model.named_modules():
+        #     if isinstance(module, PDNorm):
+        #         unet_pdnorm_params.extend(list(module.parameters()))
+        # prompt_embed_params = list(self.embed_subject.parameters())
+        # if self.enable_multi_dataset:
+        #     prompt_embed_params.extend(list(self.embed_dataset.parameters()))
+        # unfreezed_params = cond_params + unet_cond_params + unet_pdnorm_params + prompt_embed_params
 
-        cond_params = list(self.cond_stage_model.parameters())  # 502 个参数，包含49个norm
+        ##############################################
+        cond_params = [p for n, p in self.cond_stage_model.named_parameters() if 'mlp_' not in n]  
+        # 禁掉pdnorm中的scale, shift
         unet_cond_params = [p for n, p in self.model.named_parameters() 
-                    if 'time_embed_condtion' in n or 'attn2' in n]   # Unet 150/ self 300
-        # 'time_embed_condtion'  () UNetModel.Sequential(conv_[, linear])
-        # 'attn2'                () UNetModel.SpatialTransformer.BasicTransformerBlocker.CrossAttention
-        # 'norm2'                () UNetModel.SpatialTransformer.BasicTransformerBlocker.Layernorm
-            # 除了以上两部分参数包含的pdnorm，将外部的pdnorm也放开训练
-            # 已知cond_stage_model.mae.decoder_blocks和first_stage_model中没有pdnorm，因此额外的pdnorm只存在于unet
-            # num_instances_pdnorm: 158 = 49(cond_stage_model) + 109(unet_model)
-        unet_pdnorm_params = []
-        for name, module in self.model.named_modules():
-            if isinstance(module, PDNorm):
-                unet_pdnorm_params.extend(list(module.parameters()))
-        prompt_embed_params = list(self.embed_subject.parameters())
-        if self.enable_multi_dataset:
-            prompt_embed_params.extend(list(self.embed_dataset.parameters()))
-        unfreezed_params = cond_params + unet_cond_params + unet_pdnorm_params + prompt_embed_params
+            if 'time_embed_condtion' in n or 'attn2' in n or 'norm2' in n and 'mlp_' not in n]   
+        # norm2中的scale, shift也要排除 
+        unfreezed_params = cond_params + unet_cond_params
+        #######################
 
         self.freeze_whole_model()
         for p in unfreezed_params: # save VRAM when computing gradients

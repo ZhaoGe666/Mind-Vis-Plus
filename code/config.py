@@ -54,7 +54,7 @@ class Config_MBM_finetune(Config_MBM_finetune):
         
         # Project setting
         self.root_path = '.'
-        self.output_root = '/data/xiaozhaoliu/stageA3'
+        self.output_root = '/results/stageA3'
         self.kam_path = os.path.join(self.root_path, 'data/Kamitani/npz')
         self.bold5000_path = os.path.join(self.root_path, 'data/BOLD5000')
         self.dataset = 'GOD' # GOD  or BOLD5000

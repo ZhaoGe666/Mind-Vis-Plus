@@ -131,20 +131,6 @@ class GOD_dataset(Dataset):
         elif subset == 'test':
             raise Exception('fool! it is called validation set!')
 
-    def image_transform(self, img):
-        if self.subset == 'train':
-            random_crop = transforms.RandomCrop(size=int(0.8*256)) if torch.rand(1)<0.5 else self.identity
-            transform_func = transforms.Compose([self.img_normalize,
-                                                    random_crop,
-                                                    transforms.Resize((256, 256)), 
-                                                    self.channel_last])
-        elif self.subset == 'valid':
-            transform_func = transforms.Compose([self.img_normalize, 
-                                            transforms.Resize((256, 256)), 
-                                            self.channel_last])
-        return transform_func(img)
-        # return img
-
     def img_normalize(self,img):
         if img.shape[-1] == 3:
             img = rearrange(img, 'h w c -> c h w')
@@ -157,12 +143,28 @@ class GOD_dataset(Dataset):
             return img
         return rearrange(img, 'c h w -> h w c')
     
+    def image_transform(self, img):
+        if self.subset == 'train':
+            random_crop = transforms.RandomCrop(size=int(0.8*256)) if torch.rand(1)<0.5 else self.identity
+            transform_func = transforms.Compose([self.img_normalize,
+                                                    random_crop,
+                                                    transforms.Resize((256, 256)), 
+                                                    self.channel_last])
+        elif self.subset == 'valid':
+            transform_func = transforms.Compose([self.img_normalize, 
+                                            transforms.Resize((256, 256)), 
+                                            self.channel_last])
+        return transform_func(img)
+    
     def fmri_transform(self, x, sparse_rate=0.2):
-        # x: 1, num_voxels
-        x_aug = copy.deepcopy(x)
-        idx = np.random.choice(x.shape[0], int(x.shape[0]*sparse_rate), replace=False)
-        x_aug[idx] = 0
-        return torch.FloatTensor(x_aug)
+        if self.subset == 'train':
+            # x: 1, num_voxels
+            x_aug = copy.deepcopy(x)
+            idx = np.random.choice(x.shape[0], int(x.shape[0]*sparse_rate), replace=False)
+            x_aug[idx] = 0
+            return torch.FloatTensor(x_aug)
+        elif self.subset == 'valid':
+            return torch.FloatTensor(x)
 
     def identity(self, x):
         return x
