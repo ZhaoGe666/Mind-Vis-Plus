@@ -39,7 +39,7 @@ class cond_stage_model(nn.Module):
         self.global_pool = global_pool
 
     def forward(self, x):
-        # n, c, w = x.shape
+        # n, c, d = x.shape
         latent_crossattn = self.mae(x)
         if self.global_pool == False:
             latent_crossattn = self.channel_mapper(latent_crossattn) # 将seq_len作为channel去reduce？意义不明

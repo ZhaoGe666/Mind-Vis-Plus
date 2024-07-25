@@ -140,8 +140,8 @@ class PLMSSampler(object):
         iterator = tqdm(time_range, desc='PLMS Sampler', total=total_steps)
         old_eps = []
 
-        for i, step in enumerate(iterator):
-            index = total_steps - i - 1
+        for i, step in enumerate(iterator):  # step从249到0迭代,index也一样
+            index = total_steps - i - 1  # = time_range[i]
             ts = torch.full((b,), step, device=device, dtype=torch.long)
             ts_next = torch.full((b,), time_range[min(i + 1, len(time_range) - 1)], device=device, dtype=torch.long)
 

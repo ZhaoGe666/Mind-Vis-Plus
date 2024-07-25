@@ -493,7 +493,7 @@ class DDPM(pl.LightningModule):
         else:
             grid, all_samples, state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=3, limit=5)
             # all_samples: (B<limit,num_samples+1,3,256,256) 只算了5个以内的样本，每个样本采样3次生成图像
-            metric, metric_list = self.get_eval_metric(all_samples, avg=self.eval_avg)
+            metric, metric_list = self.get_eval_metric(all_samples.cpu().numpy(), avg=self.eval_avg)
             metric_dict = {f'val/{k}':v for k, v in zip(metric_list, metric)}
             self.logger.log_metrics(metric_dict)
             # ##############################
