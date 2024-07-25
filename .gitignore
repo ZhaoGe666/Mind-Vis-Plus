@@ -15,4 +15,3 @@ mind_vis.egg-info/
 *.nii
 *.gz
 *.pth
-*.ipynb
